@@ -1,0 +1,21 @@
+# ホワイトリスト方式：公開してよいフロントエンドのファイルだけを入れる
+# （サーバー部分・README（個人メモ）・テスト用ファイル・スクショ・本のデータ・node_modules・ビルド結果は入れない）
+/*
+!/.gitignore
+!/.github/
+!/index.html
+!/src/
+!/scripts/
+!/public/
+!/package.json
+!/package-lock.json
+!/tsconfig.json
+!/vite.config.ts
+!/README.pages.md
+# public/ の OCR・PDF エンジンは scripts/copy-assets.mjs が node_modules からコピーする
+/public/tesseract/
+/public/pdfjs/
+node_modules/
+dist/
+*.log
+.env*

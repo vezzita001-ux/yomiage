@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#1f2a44" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="よみあげ" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="description" content="PDF・画像・テキスト・ePubを端末内で読み上げるアプリ" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <title>よみあげ</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <button id="btnHome" class="tb-btn" hidden aria-label="ファイル一覧にもどる">← 一覧</button>
+      <h1 id="appTitle">よみあげ</h1>
+      <button id="btnOpenTop" class="tb-btn" aria-label="ファイルを開く">開く</button>
+      <button id="btnSettings" class="tb-btn" aria-label="設定">設定</button>
+    </header>
+
+    <input id="fileInput" type="file" multiple hidden
+      accept=".pdf,.txt,.text,.epub,.png,.jpg,.jpeg,.heic,.heif,.webp,.gif,application/pdf,text/plain,application/epub+zip,image/*" />
+
+    <input id="shotInput" type="file" multiple hidden accept="image/*" />
+    <input id="shotFileInput" type="file" multiple hidden accept="image/*,.png,.jpg,.jpeg,.heic,.heif,.webp,.gif,.zip,application/zip,application/x-zip-compressed" />
+    <input id="videoInput" type="file" hidden accept="video/*,.mp4,.mov,.m4v,video/mp4,video/quicktime" />
+
+    <main id="home" class="view">
+      <button id="btnOpenBig" class="big-open">📂 ファイルを開く</button>
+      <button id="btnShot" class="big-open shot-open">📸 スクショから本を作る（電子書籍アプリの画面）</button>
+      <p class="hint small">電子書籍アプリのページのスクリーンショットを、写真・ファイルアプリ（iCloud Drive・Googleドライブ・このiPhone内）・zip から何回かに分けて追加できます。ファイル名の番号順に並べ（撮影日時順・手で並べ替えも可）、同じページの重複・警告の画面・真っ黒な画面を除いて「03.GrPDF.書籍名.pdf」の本にし、本文だけを読み上げます（PDFとして保存も）。</p>
+      <button id="btnVideo" class="big-open shot-open">🎬 画面収録から読む（動画）</button>
+      <p class="hint small">電子書籍アプリのページを自動でめくりながら「画面収録」した動画を選ぶと、ページごとに取り出して読み上げます（サーバーへ送って処理。動画は処理後すぐ消し、ページ画像も24時間で消えます）。PDF（「03.GrPDF.書籍名.pdf」）として保存もできます。<a href="#" id="lnkVideoHelp">自動ページめくりのやり方</a></p>
+      <p class="hint small">電子書籍アプリ（Kindle など）で読んでいるページのスクリーンショットを、写真から何枚でもまとめて選べます。ファイル名の番号順に並べ、時刻・電池などの表示や「位置No.」などを除いて本文だけを読み上げます。<br />ショートカットでスクショをまとめたPDF（「03.GrPDF.書籍名.pdf」）は「ファイルを開く」から開くと、自動でスマホ画面として読み、本棚に書籍名・巻の順で並びます。本棚の「✏️」または読んでいる画面の「✏️ 名前を変更」で、一時的な名前のファイルにも書籍名・巻を付けられます。警告表示などが写る時は、読んでいる画面の「✂️ 切り取り」で調整できます。</p>
+      <p class="hint">PDF・画像（スクリーンショット）・テキスト（.txt）・ePub を開いて読み上げます。<br />
+        画像は複数枚まとめて選べます（選んだ順に読みます）。<br />
+        文字の入ったPDF・テキスト・ePubは、この端末の中だけで処理します。<br />
+        スキャンした本などの画像の文字読み取り（OCR）は、設定が「高精度（サーバー）」のとき、ページの画像をこのアプリの配信元サーバーへ送って読み取ります（保存はしません）。</p>
+      <p class="muted small build" id="homeBuild"></p>
+      <div class="recent-headrow"><h2 class="section-title">最近のファイル</h2><button id="btnBackupHome" class="small-btn" aria-label="バックアップと復元">💾 バックアップ</button></div>
+      <div id="bkRemind" class="bk-remind" hidden>
+        <p id="bkRemindText" class="small"></p>
+        <div class="row2"><button id="bkRemindOpen" class="small-btn primary">バックアップを保存</button><button id="bkRemindLater" class="small-btn">あとで</button></div>
+      </div>
+      <ul id="recentList" class="recent"></ul>
+      <p id="recentEmpty" class="muted">まだありません。</p>
+    </main>
+
+    <main id="reader" class="view" hidden>
+      <div class="docrow"><div class="docname" id="docName"></div><button id="btnRename" class="tb-btn rn-btn" aria-label="この本の名前を変更">✏️ 名前を変更</button></div>
+      <nav class="pagebar" aria-label="ページ移動">
+        <button id="btnPrevPage" class="pg-btn" aria-label="前のページ">◀</button>
+        <button id="btnPageNo" class="pg-no" aria-label="ページ番号を指定して移動"></button>
+        <button id="btnNextPage" class="pg-btn" aria-label="次のページ">▶</button>
+        <button id="btnFix" class="pg-btn fix-btn" aria-label="今読んでいる文の行の文字を修正">✏️<span>修正</span></button>
+      </nav>
+      <div id="ocrBar" class="ocrbar" hidden>
+        <div class="seg" role="radiogroup" aria-label="OCRの方式">
+          <button data-ocreng="server" role="radio">高精度（サーバー）</button>
+          <button data-ocreng="device" role="radio">端末内</button>
+        </div>
+        <div class="seg dirOnly" role="radiogroup" aria-label="端末内OCRの書字方向">
+          <button data-ocr="auto" role="radio">自動</button>
+          <button data-ocr="horizontal" role="radio">横書き</button>
+          <button data-ocr="vertical" role="radio">縦書き</button>
+        </div>
+        <button id="btnToggleImg" class="small-btn"></button>
+        <button id="btnImgSize" class="small-btn"></button>
+        <button id="btnTrim" class="small-btn" aria-label="スマホ画面の切り取り設定">✂️ 切り取り</button>
+        <button id="btnOcrPdf" class="small-btn" aria-label="読み取った文字を入れたPDFを保存">💾 文字入りPDF</button>
+      </div>
+      <div id="status" class="status" hidden role="status" aria-live="polite">
+        <div id="statusText"></div>
+        <progress id="statusProg" max="1" value="0"></progress>
+      </div>
+      <div id="pageImg" class="pageimg"></div>
+      <article id="text" class="text" lang="ja"></article>
+      <div class="spacer"></div>
+      <div id="selBar" class="selbar" hidden>
+        <button id="btnSelDict" class="selbtn"></button>
+        <button id="btnSelFix" class="selbtn fix">✏️ この行の文字を修正</button>
+      </div>
+    </main>
+
+    <footer id="controls" class="controls" hidden>
+      <div class="ctl-info"><span id="ctlInfo"></span> <span id="credit" class="credit"></span></div>
+      <div class="ctl-row">
+        <button id="btnPrev" class="ctl" aria-label="前の文"><span class="ic">⏮</span><span class="lb">前の文</span></button>
+        <button id="btnPlay" class="ctl play" aria-label="再生"><span class="ic">▶</span><span class="lb">再生</span></button>
+        <button id="btnNext" class="ctl" aria-label="次の文"><span class="ic">⏭</span><span class="lb">次の文</span></button>
+        <button id="btnStop" class="ctl" aria-label="停止"><span class="ic">⏹</span><span class="lb">停止</span></button>
+      </div>
+    </footer>
+
+    <div id="settings" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="settingsTitle">設定</h2>
+          <button id="btnCloseSettings" class="tb-btn" aria-label="設定を閉じる">閉じる</button>
+        </div>
+        <details id="howto" class="diag howto">
+          <summary>使い方：読み間違い・スキャン間違いの直し方</summary>
+          <h4>読み方がおかしい時（文字は正しいのに、読み方が違う）</h4>
+          <ol>
+            <li>本文の、読み方がおかしい言葉を<b>長押し</b>して選びます（青い選択の端を動かして範囲を調整できます）。</li>
+            <li>画面の下に出る<b>「〇〇の読み方を登録」</b>をタップします。</li>
+            <li>「読み方辞書」が開くので、<b>「読み」</b>にひらがなで正しい読みを入れて<b>「追加する」</b>をタップします。</li>
+          </ol>
+          <p>画面の文字はそのままで、読み上げだけが変わります。すべてのファイルに効きます。</p>
+          <h4>文字そのものが違う時（スキャン・OCRの読み取り間違い。例：「猪」が「猫」になっている）</h4>
+          <ol>
+            <li>間違っている文字を<b>長押し</b>して選び、画面の下の<b>「✏️ この行の文字を修正」</b>をタップします。<br />
+              （長押しがうまくいかない時は、間違いのある文をタップして読み上げ位置を合わせてから、ページ番号の右の<b>「✏️修正」</b>をタップしても同じ画面が開きます。）</li>
+            <li>「文字の修正」の画面に、その行の元の画像（サーバーOCRの時）と文字が出ます。見比べながら文字を直して<b>「保存」</b>をタップします。</li>
+            <li>直した文字は、画面の表示と読み上げの両方に使われます（読み方辞書はそのあとに効きます）。ファイルを開き直しても残ります。</li>
+            <li>同じ間違いが本のあちこちにある時は、<b>「この修正を本全体に適用（一括置換）」</b>を開き、<b>「件数を確認（プレビュー）」</b>で何か所変わるかを確かめてから<b>「本全体に適用する」</b>をタップします。</li>
+            <li>元に戻す時は、その行の「文字の修正」を開いて<b>「元に戻す」</b>、一括置換は一覧の<b>「元に戻す」</b>をタップします。</li>
+          </ol>
+          <p>「◀ 前の行」「次の行 ▶」で、続けて何行でも直せます（直した内容は移動の時に自動で保存されます）。</p>
+        </details>
+        <div class="field" id="srvField">サーバーURL（音声・OCR用）
+          <input id="srvUrl" class="text-in" type="url" inputmode="url" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="空欄＝このアプリと同じサーバー" />
+          <div class="row2"><button id="btnSrvSave" class="wide-btn primary">保存して接続確認</button><button id="btnSrvCheck" class="wide-btn">接続確認</button></div>
+          <p id="srvStatus" class="small" style="font-weight:normal"></p>
+          <p class="muted small" style="font-weight:normal">GitHub Pages版（https://vezzita001-ux.github.io/yomiage/）で使う時は、サーバーのURL（https://〜.trycloudflare.com）をここに貼り付けて「保存して接続確認」を押してください。サーバーを起動し直してURLが変わった時も、ここだけ変えれば本棚はそのまま使えます。空欄にすると、今アプリを開いているURLと同じサーバーを使います。</p>
+        </div>
+        <div class="field">読み上げエンジン
+          <div class="seg" id="engineSeg">
+            <button data-engine="browser">端末の声</button>
+            <button data-engine="voicevox">VOICEVOX</button>
+            <button data-engine="aivis">AivisSpeech</button>
+          </div>
+        </div>
+        <div id="browserBox">
+          <label class="field">声（日本語）
+            <select id="voiceSel"></select>
+          </label>
+          <p id="voiceNote" class="muted small"></p>
+        </div>
+        <div id="vvBox" hidden>
+          <label class="field"><span id="vvLabel">VOICEVOXの声</span>
+            <select id="vvSel"></select>
+          </label>
+          <p id="vvNote" class="muted small"></p>
+        </div>
+        <label class="field">速さ <output id="rateOut"></output>
+          <input id="rate" type="range" min="0.5" max="2" step="0.05" />
+        </label>
+        <label class="field">声の高さ <output id="pitchOut"></output>
+          <input id="pitch" type="range" min="0.5" max="2" step="0.05" />
+        </label>
+        <fieldset id="vvAdjust" class="vvadj">
+          <legend>抑揚・音量・間（VOICEVOX・AivisSpeech）</legend>
+          <p id="vvAdjNote" class="muted small">端末の声（iPhoneの声）で変えられるのは「速さ」と「声の高さ」だけです（ブラウザの仕組みの制限）。抑揚・音量・句読点の間は、読み上げエンジンで「VOICEVOX」か「AivisSpeech」を選ぶと調整できます。</p>
+          <p id="aivisAdjNote" class="muted small" hidden>AivisSpeechでは「抑揚」は感情表現の強さとして働きます。声の高さを大きく変えると音質が落ちることがあります。</p>
+          <label class="field">抑揚 <output id="intonationOut"></output>
+            <input id="intonation" type="range" min="0" max="2" step="0.05" />
+          </label>
+          <label class="field">音量 <output id="volumeOut"></output>
+            <input id="volume" type="range" min="0" max="2" step="0.05" />
+          </label>
+          <label class="field">句読点の間の長さ <output id="pauseOut"></output>
+            <input id="pause" type="range" min="0" max="2" step="0.05" />
+          </label>
+        </fieldset>
+        <label class="field">文と文の間（両方のエンジン） <output id="gapOut"></output>
+          <input id="gap" type="range" min="0" max="2" step="0.1" />
+        </label>
+        <label class="field">試し聴きする文
+          <input id="testText" type="text" class="text-in" value="こんにちは。これは読み上げのテストです。" />
+        </label>
+        <button id="btnTest" class="wide-btn primary">▶ 試し聴き</button>
+        <button id="btnDict" class="wide-btn">読み方辞書（読み間違いの修正）</button>
+        <label class="field">文字の大きさ <output id="fontOut"></output>
+          <input id="font" type="range" min="16" max="40" step="1" />
+        </label>
+        <div class="field">画面の色
+          <div class="seg" id="themeSeg">
+            <button data-theme="auto">端末に合わせる</button>
+            <button data-theme="light">明るい</button>
+            <button data-theme="dark">暗い</button>
+          </div>
+        </div>
+        <div class="field">文字の読み取り（OCR：画像・スキャンPDF）
+          <div class="seg">
+            <button data-ocreng="server">高精度（サーバー・NDLOCR-Lite）</button>
+            <button data-ocreng="device">端末内（オフライン）</button>
+          </div>
+          <span class="muted small">高精度：ページの画像を配信元サーバーに送り、国立国会図書館のNDLOCR-Liteで読み取ります（縦書きの本に強い）。つながらない時は自動で端末内に切り替えます。</span>
+        </div>
+        <div class="field">見開き分割（1枚に2ページ分が並んだPDF・画像）
+          <div class="seg">
+            <button data-spread="auto">自動</button>
+            <button data-spread="on">する</button>
+            <button data-spread="off">しない</button>
+          </div>
+          <span class="muted small">「する」「自動（横長で中央に余白がある時）」では、右ページ→左ページの順に読みます。ページ上の柱（書名・章題）とページ番号は読みません。</span>
+        </div>
+        <div class="field dirOnly">端末内OCRの書字方向
+          <div class="seg" id="ocrSeg">
+            <button data-ocr="auto">自動</button>
+            <button data-ocr="horizontal">横書き</button>
+            <button data-ocr="vertical">縦書き</button>
+          </div>
+        </div>
+        <label class="check"><input id="chkImg" type="checkbox" /> ページの画像も表示する（PDF・画像）</label>
+        <label class="check"><input id="chkWake" type="checkbox" /> 読み上げ中は画面を消さない</label>
+        <details id="scBox" class="diag howto">
+          <summary>iPhoneのショートカットで読み上げる（スクショ読み上げ）</summary>
+          <p class="small">Kindle などを読みながら、iPhoneの背面を2回たたくだけで今の画面を読み上げる「ショートカット」を作れます。下のボタンで、今の声の設定と読み方辞書が入ったURLを作り、ショートカットの「URL」に貼り付けてください（作り方は別にお渡しする手順書を見てください）。</p>
+          <button id="btnScMake" class="wide-btn primary">ショートカット用のURLを作る（辞書もサーバーに送る）</button>
+          <p id="scNote" class="muted small"></p>
+          <div id="scUrls"></div>
+          <p class="muted small">送ったスクリーンショットはサーバーのメモリに30分だけ置き（表示用）、ディスクには保存しません。読み方辞書はショートカットで使うためサーバーに保存されます（辞書を変えたら、もう一度ボタンを押すと上書きされます。URLは同じままです）。</p>
+        </details>
+        <details id="diag" class="diag">
+          <summary>音声の診断（この端末の声をすべて表示）</summary>
+          <button id="btnDiagRefresh" class="wide-btn">一覧を更新</button>
+          <div id="diagBody" class="diag-body"></div>
+        </details>
+        <details id="dbg" class="diag">
+          <summary>診断ログ（うまく動かない時に）</summary>
+          <p class="muted small">うまく動かない時は、このログをコピーして送ってください（または画面を撮影）。</p>
+          <button id="btnDbgCopy" class="wide-btn">診断ログをコピー</button>
+          <pre id="dbgText" class="dbgtext"></pre>
+        </details>
+        <button id="btnBackupSettings" class="wide-btn">💾 バックアップ・📂 復元（本棚・設定・辞書を別の端末やURLへ）</button>
+        <button id="btnUpdate" class="wide-btn">最新版に更新（読み込み直す）</button>
+        <p class="muted small">バージョン：<span id="buildInfo"></span></p>
+        <button id="btnClear" class="wide-btn danger">保存したデータを消す（辞書以外）</button>
+        <p class="muted small">よみあげ v1 ・ 無料・オープンソースのライブラリのみ使用（pdf.js / tesseract.js / JSZip / NDLOCR-Lite（国立国会図書館, CC BY 4.0））。端末の声を使う場合、通信はアプリ本体とOCR用日本語データ（初回のみ）の読み込みだけです。VOICEVOX・AivisSpeechを選んだ場合のみ、読み上げる文がこのアプリの配信元サーバーへ送られて音声になります。</p>
+      </div>
+    </div>
+
+    <div id="dictSheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="dictTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="dictTitle">読み方辞書</h2>
+          <button id="btnCloseDict" class="tb-btn" aria-label="辞書を閉じる">閉じる</button>
+        </div>
+        <p class="muted small">読み間違える言葉と正しい読みを登録します。画面の表示はそのままで、読み上げだけが変わります（端末の声・VOICEVOXの両方に効きます）。上から順に置き換えます。</p>
+        <label class="field">表記（画面の文字）
+          <input id="dFrom" type="text" class="text-in" placeholder="例：何卒" autocomplete="off" />
+        </label>
+        <label class="field">読み（ひらがな・カタカナなど）
+          <input id="dTo" type="text" class="text-in" placeholder="例：なにとぞ" autocomplete="off" />
+        </label>
+        <label class="check"><input id="dRegex" type="checkbox" /> 正規表現として扱う（上級者向け。読みでは $1 などが使えます）</label>
+        <p id="dErr" class="error small" hidden></p>
+        <div class="row2">
+          <button id="dSave" class="wide-btn primary">追加する</button>
+          <button id="dCancel" class="wide-btn" hidden>編集をやめる</button>
+        </div>
+        <label class="field">辞書を試す
+          <input id="dTest" type="text" class="text-in" placeholder="文を入れて試し聴き" />
+        </label>
+        <p id="dTestOut" class="muted small"></p>
+        <button id="dTestBtn" class="wide-btn">▶ 辞書を使って試し聴き</button>
+        <h3 class="section-title">登録した言葉 <span id="dCount"></span></h3>
+        <ul id="dList" class="dlist"></ul>
+        <div class="row2">
+          <button id="dExport" class="wide-btn">書き出す（JSON）</button>
+          <button id="dImport" class="wide-btn">読み込む（JSON）</button>
+        </div>
+        <input id="dImportFile" type="file" accept=".json,application/json,text/plain" hidden />
+      </div>
+    </div>
+
+
+    <div id="sbSheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sbTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="sbTitle">スクショから本を作る</h2>
+          <button id="btnCloseSb" class="tb-btn" aria-label="閉じる">閉じる</button>
+        </div>
+        <div class="row2">
+          <label class="field" style="flex:0 0 6em">巻No<input id="sbVol" type="number" min="0" max="999" inputmode="numeric" /></label>
+          <label class="field" style="flex:1">書籍名<input id="sbTitleIn" type="text" placeholder="例：羅生門" /></label>
+        </div>
+        <p id="sbName" class="muted small"></p>
+        <button id="sbAddPhoto" class="wide-btn">🖼 写真から追加</button>
+        <button id="sbAddFile" class="wide-btn">📁 ファイルから追加（iCloud Drive・Googleドライブ・このiPhone内・zip）</button>
+        <p class="muted small">1回に何枚でも（16枚ずつなど何回かに分けても）追加できます。撮影日時の順に自動で並びます。選ぶ画面で「ファイルを選択」「ブラウズ」からも選べます。</p>
+        <div id="sbProgBox" hidden><p id="sbProgText"></p><progress id="sbProg" max="1" value="0" style="width:100%"></progress></div>
+        <p id="sbSummary"></p>
+        <div class="sbbar">
+          <label class="sbsort">並び順
+            <select id="sbSort" aria-label="並び順">
+              <option value="name-asc">ファイル名（昇順）</option>
+              <option value="name-desc">ファイル名（降順）</option>
+              <option value="time-asc">撮影/保存日時（古い順）</option>
+              <option value="time-desc">撮影/保存日時（新しい順）</option>
+              <option value="import">取り込んだ順</option>
+              <option value="manual">手で並べた順</option>
+            </select>
+          </label>
+          <button id="sbReverse" class="tb-btn" aria-label="並びを逆にする">⇅ 逆順</button>
+          <button id="sbArrange" class="tb-btn" aria-pressed="false">✋ ドラッグで並べ替え</button>
+        </div>
+        <p id="sbSortNote" class="muted small"></p>
+        <div id="sbThumbs" class="vthumbs sbthumbs"></div>
+        <div id="sbActions" class="sbactions" hidden>
+          <p id="sbSel" class="small"></p>
+          <div class="sbact-row">
+            <button id="sbPrevPos" class="tb-btn" aria-label="1つ前へ">◀ 前へ</button>
+            <button id="sbNextPos" class="tb-btn" aria-label="1つ後ろへ">後ろへ ▶</button>
+            <button id="sbCover" class="tb-btn">この画像を1ページ目に</button>
+            <button id="sbMoveTo" class="tb-btn">○ページ目へ移動</button>
+            <button id="sbToggle" class="tb-btn">本に入れない</button>
+            <button id="sbUnsel" class="tb-btn">選択をやめる</button>
+          </div>
+        </div>
+        <p class="muted small">サムネイルをタップで選択（移動・1ページ目に・入れない）。「ドラッグで並べ替え」をオンにすると指で動かせます。✕＝本に入れないページ（重複・真っ黒など自動で判定）。</p>
+        <div class="field">分けて作る（ページが多い時。iPhoneの負担を減らせます）
+          <div class="row2">
+            <select id="sbSplit" style="flex:0 0 9em;min-height:44px">
+              <option value="none">分けない</option>
+              <option value="every">○枚ごと</option>
+              <option value="ranges">ページ範囲</option>
+            </select>
+            <input id="sbSplitVal" type="text" inputmode="numeric" placeholder="例：150 / 1-120,121-250" style="flex:1;min-height:44px;font-size:17px" />
+          </div>
+        </div>
+        <p id="sbSplitNote" class="muted small"></p>
+        <label class="check"><input id="sbOcr" type="checkbox" checked /> 読み取った文字もPDFに入れる（PDFだけでオフラインでも読める・検索できる。はじめにサーバーで全ページを読み取ります）</label>
+        <button id="sbRead" class="wide-btn primary">📖 本にして読む</button>
+        <button id="sbSave" class="wide-btn">💾 PDFを保存（ファイル・Googleドライブへ）</button>
+        <button id="sbClear" class="wide-btn danger">🗑 次の本へ（追加した画像を消す）</button>
+      </div>
+    </div>
+
+    <div id="videoSheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="videoTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="videoTitle">画面収録から読む</h2>
+          <button id="btnCloseVideo" class="tb-btn" aria-label="閉じる">閉じる</button>
+        </div>
+        <p id="vFile" class="muted small"></p>
+        <div id="vProgBox">
+          <p id="vStage">準備中…</p>
+          <progress id="vProg" max="1" value="0" style="width:100%"></progress>
+          <p id="vProgNote" class="muted small">送信中はこの画面のままにしてください（画面が消えると止まります。止まったら同じ動画を選び直すと続きから送ります）。</p>
+          <button id="vCancel" class="wide-btn">中止</button>
+        </div>
+        <div id="vResult" hidden>
+          <p id="vSummary"></p>
+          <ul id="vWarn" class="vwarn"></ul>
+          <p class="muted small">本のページではない画面（最初・最後のコントロールセンターやホーム画面など）はタップして外してください（✕が付いたページは入れません）。</p>
+          <div id="vThumbs" class="vthumbs"></div>
+          <div class="row2">
+            <label class="field" style="flex:0 0 6em">巻No<input id="vVol" type="number" min="0" max="999" inputmode="numeric" /></label>
+            <label class="field" style="flex:1">書籍名<input id="vTitle" type="text" placeholder="例：羅生門" /></label>
+          </div>
+          <p id="vName" class="muted small"></p>
+          <button id="vRead" class="wide-btn primary">📖 PDFにして読む</button>
+          <button id="vSave" class="wide-btn">💾 PDFを保存（ファイル・Googleドライブへ）</button>
+        </div>
+        <details id="vHelp" class="vhelp">
+          <summary>自動ページめくり＋画面収録のやり方（iPhone）</summary>
+          <div id="vHelpBody"></div>
+        </details>
+      </div>
+    </div>
+
+    <div id="trimSheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="trimTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="trimTitle">画面の切り取り</h2>
+          <button id="btnCloseTrim" class="tb-btn" aria-label="切り取り設定を閉じる">閉じる</button>
+        </div>
+        <p id="trimFor" class="muted small"></p>
+        <div class="field">スマホ画面モード（時刻・電池・位置No.・%などを読まない）
+          <div class="seg">
+            <button data-tscreen="auto">自動</button>
+            <button data-tscreen="on">オン</button>
+            <button data-tscreen="off">オフ</button>
+          </div>
+        </div>
+        <div class="field">切り取り方
+          <div class="seg">
+            <button data-tmode="auto">自動（ステータスバー等）</button>
+            <button data-tmode="manual">手動で指定</button>
+          </div>
+        </div>
+        <div class="trimprev"><canvas id="trimCanvas" aria-label="切り取りのプレビュー（暗い部分は読みません）"></canvas></div>
+        <p id="trimNote" class="muted small"></p>
+        <fieldset id="trimManual" class="vvadj">
+          <legend>切り取る幅（画面の％）</legend>
+          <label class="field">上 <output id="trimTopOut"></output><input id="trimTop" type="range" min="0" max="45" step="0.5" /></label>
+          <label class="field">下 <output id="trimBottomOut"></output><input id="trimBottom" type="range" min="0" max="45" step="0.5" /></label>
+          <label class="field">左 <output id="trimLeftOut"></output><input id="trimLeft" type="range" min="0" max="45" step="0.5" /></label>
+          <label class="field">右 <output id="trimRightOut"></output><input id="trimRight" type="range" min="0" max="45" step="0.5" /></label>
+        </fieldset>
+        <div class="row2">
+          <button id="trimSave" class="wide-btn primary">保存して読み直す</button>
+          <button id="trimReset" class="wide-btn">初期値に戻す</button>
+        </div>
+        <p class="muted small">スクリーンショットの警告表示（dアニメストアなど）や、読書アプリのボタン・帯が写り込む時は「手動で指定」にして、その部分が暗くなるように調整してください。設定は書籍名ごと（「03.GrPDF.書籍名.pdf」なら全巻共通）に覚えます。</p>
+      </div>
+    </div>
+
+    <div id="rnSheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="rnTitleH">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="rnTitleH">✏️ 名前を変更</h2>
+          <button id="btnCloseRn" class="tb-btn" aria-label="名前の変更を閉じる">閉じる</button>
+        </div>
+        <p id="rnNow" class="muted small"></p>
+        <div class="field">名前の形式
+          <div class="seg" role="radiogroup" aria-label="名前の形式">
+            <button data-rnmode="book" role="radio">巻No.＋書籍名の形式</button>
+            <button data-rnmode="free" role="radio">自由な名前</button>
+          </div>
+        </div>
+        <div id="rnBookBox">
+          <label class="field">巻No.（無くてもよい）<input id="rnVol" type="text" inputmode="numeric" placeholder="例：3" autocomplete="off" /></label>
+          <label class="field">書籍名<input id="rnTitle" type="text" placeholder="例：羅生門" autocomplete="off" /></label>
+        </div>
+        <label id="rnFreeBox" class="field" hidden>名前<input id="rnFree" type="text" autocomplete="off" /></label>
+        <button id="rnMeta" class="wide-btn" hidden>本のタイトルを使う</button>
+        <p id="rnPreview" class="small" aria-live="polite"></p>
+        <div class="row2">
+          <button id="rnSave" class="wide-btn primary">この名前にする</button>
+          <button id="rnReset" class="wide-btn">元の名前に戻す</button>
+        </div>
+        <button id="rnExport" class="wide-btn">💾 この名前でファイルを保存</button>
+        <p class="muted small">ファイルの中身・読んでいた位置・読み取り結果・文字の修正はそのまま残ります。ファイル名に使えない記号（/ \ : * ? " &lt; &gt; |）は全角にします。「巻No.＋書籍名」にすると本棚で書籍名→巻の順に並びます。</p>
+      </div>
+    </div>
+
+    <div id="bkSheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="bkTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="bkTitle">💾 バックアップ・復元</h2>
+          <button id="btnCloseBk" class="tb-btn" aria-label="バックアップを閉じる">閉じる</button>
+        </div>
+        <p class="muted small">本棚の本・読書位置・切り取り設定・読み取り結果・変えた名前・辞書・声や速さの設定を1つのファイル（.zip）にまとめます。URLが変わった時や、iPhone⇔Android で同じ環境にする時は、保存したファイルを「復元」で読み込んでください。</p>
+        <h3 class="section-title">保存</h3>
+        <div class="field">入れるもの
+          <div class="seg" role="radiogroup" aria-label="入れるもの">
+            <button data-bkwhat="books" role="radio">本も含める</button>
+            <button data-bkwhat="settings" role="radio">設定・辞書・読書位置だけ</button>
+          </div>
+        </div>
+        <label class="field">分けて保存（大きい時）
+          <select id="bkPart">
+            <option value="1000">1GBごと（おすすめ）</option>
+            <option value="500">500MBごと</option>
+            <option value="200">200MBごと</option>
+            <option value="3500">分けない</option>
+          </select>
+        </label>
+        <div id="bkListBox" hidden>
+          <p class="small">入れる本を選べます（小さくするため、サムネイル・読み上げ音声などの作り直せるものは入れません）</p>
+          <div class="bk-list-btns"><button id="bkAll" class="small-btn" type="button">全部選ぶ</button><button id="bkNone" class="small-btn" type="button">全部外す</button></div>
+          <div id="bkList" class="bk-list"></div>
+          <label id="bkGrayRow" class="bk-item" hidden><input type="checkbox" id="bkGray"><span>スクショ本の画像を白黒にして小さくする（文字の読み取りには十分）</span></label>
+        </div>
+        <p id="bkEstimate" class="small" aria-live="polite"></p>
+        <button id="bkMake" class="wide-btn primary">💾 バックアップを保存</button>
+        <div id="bkReady" hidden>
+          <p id="bkReadyText" class="small"></p>
+          <div id="bkReadyBtns"></div>
+        </div>
+        <p id="bkLast" class="muted small"></p>
+        <h3 class="section-title">復元</h3>
+        <div class="field">復元のしかた
+          <div class="seg" role="radiogroup" aria-label="復元のしかた">
+            <button data-bkmode="merge" role="radio">足す（今のデータも残す）</button>
+            <button data-bkmode="replace" role="radio">置き換える</button>
+          </div>
+        </div>
+        <p id="bkModeNote" class="muted small"></p>
+        <button id="bkRestore" class="wide-btn">📂 バックアップから復元</button>
+        <input id="bkInput" type="file" accept=".zip,application/zip,application/x-zip-compressed,application/octet-stream" multiple hidden />
+        <div id="bkProgBox" hidden><progress id="bkProg" max="1" value="0"></progress><p id="bkProgText" class="small"></p></div>
+        <p id="bkResult" class="small" aria-live="polite"></p>
+        <h3 class="section-title">この端末の保存場所</h3>
+        <p id="bkStorage" class="muted small"></p>
+        <button id="bkPersist" class="wide-btn" hidden>消されにくくする（ブラウザに保存の固定を頼む）</button>
+      </div>
+    </div>
+
+    <div id="fixSheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="fixTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="fixTitle">文字の修正</h2>
+          <button id="btnCloseFix" class="tb-btn" aria-label="文字の修正を閉じる">閉じる</button>
+        </div>
+        <p id="fixWhere" class="muted small"></p>
+        <div id="fixImgBox" class="fiximgbox" hidden><canvas id="fixImg" class="fiximg" aria-label="この行の元の画像"></canvas></div>
+        <label class="field">この行の文字（直して「保存」を押してください）
+          <textarea id="fixText" class="text-area" rows="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+        </label>
+        <p id="fixOrigBox" class="muted small" hidden>元の読み取り結果：<span id="fixOrig"></span></p>
+        <div class="row2">
+          <button id="fixSave" class="wide-btn primary">保存</button>
+          <button id="fixUndo" class="wide-btn" hidden>元に戻す</button>
+        </div>
+        <div class="row2">
+          <button id="fixPrev" class="wide-btn">◀ 前の行</button>
+          <button id="fixNext" class="wide-btn">次の行 ▶</button>
+        </div>
+        <details id="fixBulk" class="diag">
+          <summary>この修正を本全体に適用（一括置換）</summary>
+          <p class="muted small">同じ読み取り間違いを、この本のすべてのページでまとめて直します。まず件数を確認してください。</p>
+          <label class="field">置き換える文字（間違い）
+            <input id="bFrom" type="text" class="text-in" autocomplete="off" placeholder="例：猫" />
+          </label>
+          <label class="field">置き換え後の文字（正しい文字）
+            <input id="bTo" type="text" class="text-in" autocomplete="off" placeholder="例：猪" />
+          </label>
+          <button id="bPreview" class="wide-btn">件数を確認（プレビュー）</button>
+          <div id="bResult" class="bresult" aria-live="polite"></div>
+          <button id="bApply" class="wide-btn primary" disabled>本全体に適用する</button>
+        </details>
+        <h3 class="section-title">この本の一括置換 <span id="bCount"></span></h3>
+        <ul id="bList" class="dlist"></ul>
+        <p id="bEmpty" class="muted small">まだありません。</p>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1f2a44"/>
+  <path d="M96 150c60-24 118-24 160 10v230c-42-30-100-32-160-10z" fill="#fbf8f1"/>
+  <path d="M416 150c-60-24-118-24-160 10v230c42-30 100-32 160-10z" fill="#e8e1cf"/>
+  <path d="M300 214q30 42 0 84M330 190q52 66 0 132" stroke="#ffcf3f" stroke-width="18" fill="none" stroke-linecap="round"/>
+  <text x="256" y="470" font-size="64" text-anchor="middle" fill="#fbf8f1" font-family="Noto Sans CJK JP, sans-serif" font-weight="bold">よみあげ</text>
+</svg>
