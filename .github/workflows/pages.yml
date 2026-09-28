@@ -25,7 +25,9 @@ jobs:
           cache: npm
       - run: npm ci
       # サーバー部分（音声・OCRの中継）は公開リポジトリに入れていないので、何もしない代わりを置く
-      - run: test -f voicevox-proxy.ts || echo "export const voicevoxProxy = () => ({ name: 'no-server' });" > voicevox-proxy.ts
+      - name: Stub server plugin
+        run: |
+          test -f voicevox-proxy.ts || echo "export const voicevoxProxy = () => ({ name: 'no-server' });" > voicevox-proxy.ts
       - run: npm run build
         env:
           YOMIAGE_BASE: /yomiage/
