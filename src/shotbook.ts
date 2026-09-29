@@ -91,7 +91,7 @@ export async function clearItems(): Promise<void> {
   try { await tx('readwrite', (s) => s.clear()); } catch { /* 無視 */ }
 }
 
-export interface Meta { title: string; vol: number; built?: string; builtName?: string; sort?: SortMode; splitOffered?: boolean; split?: 'none' | 'every' | 'ranges'; splitVal?: string; builtParts?: Record<string, string> }
+export interface Meta { title: string; vol: number; built?: string; builtName?: string; sort?: SortMode; splitOffered?: boolean; split?: 'none' | 'every' | 'ranges'; splitVal?: string; builtParts?: Record<string, string>; /** 作った冊ごとの中身（画像の key の並び） */ builtSig?: Record<string, string> }
 export function loadMeta(): Meta { try { return JSON.parse(localStorage.getItem(META) || 'null') || { title: '', vol: 1 }; } catch { return { title: '', vol: 1 }; } }
 export function saveMeta(m: Meta) { localStorage.setItem(META, JSON.stringify(m)); }
 

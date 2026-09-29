@@ -1073,36 +1073,47 @@ $('sbRead').onclick = async () => {
   try {
     sbSaveMeta();
     const parts = await sbMakeParts(false);
-    const n = sbBookPages().length;
+    const pages = sbBookPages();
     const ranges = sbRanges();
     const meta = sbLoadMeta();
     const built = meta.builtParts || {};
+    const oldSig = meta.builtSig || {};
     const title = sbTitle().trim() || '無題';
     const vol = String(Math.floor(Number(sbVolStr()) || 1)).padStart(2, '0');
     const sameBook = new RegExp(`^${vol}(?:-\\d+)?\\.GrPDF\\.${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.pdf$`);
     let openIdx = 0; let newest = 0;
-    const newIds = new Set(parts.map((f) => docIdFor([f], 'pdf')));
-    // 同じ巻を作り直した時：前の本（分け方が変わった分も）を本棚から外し、読んでいた位置を引き継ぐ
-    const carry = (oldId: string, newId: string, count: number, k: number) => {
-      const pos = loadPosition(oldId);
-      if (!pos || oldId === newId || loadPosition(newId)) return;
-      savePosition(newId, { ...pos, page: Math.min(pos.page, count - 1), sentence: pos.page >= count ? 0 : pos.sentence, pageCount: count });
-      if (pos.updated > newest) { newest = pos.updated; openIdx = k; }
-    };
-    parts.forEach((f, k) => { const old = built[f.name]; if (old) carry(old, docIdFor([f], 'pdf'), ranges[k][1] - ranges[k][0] + 1, k); });
-    if (parts.length === 1 && meta.built && meta.builtName === parts[0].name) carry(meta.built, docIdFor(parts, 'pdf'), n, 0);
+    const ids = parts.map((f) => docIdFor([f], 'pdf'));
+    const newIds = new Set(ids);
+    // 各冊の中身（どの画像がどの順で入っているか）。本の ID は「ファイル名＋大きさ」なので、並べ替えただけだと同じ ID になる
+    const sigs = ranges.map(([a, b]) => pages.slice(a - 1, b).map((p) => p.key).join(','));
+    // 同じ巻を作り直した時：中身（ページの並び）が前と全く同じ冊だけ、読んでいた位置を引き継ぐ。
+    // 中身が変わった冊（並べ替え・分け方の変更・画像の追加）は、前の位置と読み取り結果（ページ番号ごと）を消して1ページ目から
+    for (let k = 0; k < parts.length; k++) {
+      const f = parts[k], newId = ids[k], count = ranges[k][1] - ranges[k][0] + 1;
+      if (oldSig[f.name] !== sigs[k]) {
+        try { await deleteRecent(newId); } catch (e) { console.warn('[SHOTBOOK] reset part failed', e); }
+        console.info(`[SHOTBOOK] ${f.name}: pages changed → start from page 1`);
+        continue;
+      }
+      const old = built[f.name];
+      let pos = loadPosition(newId);
+      if (!pos && old && old !== newId && (pos = loadPosition(old))) {
+        pos = { ...pos, page: Math.min(pos.page, count - 1), sentence: pos.page >= count ? 0 : pos.sentence, pageCount: count };
+        savePosition(newId, pos);
+      }
+      if (pos && (pos.page > 0 || pos.sentence > 0) && pos.updated > newest) { newest = pos.updated; openIdx = k; }
+    }
     try {
       for (const r of await listRecent()) {
         const fn = r.files[0]?.name || '';
         if (newIds.has(r.id) || !sameBook.test(fn)) continue;
-        const k = parts.findIndex((f) => f.name === fn);
-        if (k >= 0) carry(r.id, docIdFor([parts[k]], 'pdf'), ranges[k][1] - ranges[k][0] + 1, k);
         await deleteRecent(r.id);
         console.info(`[SHOTBOOK] replaced ${r.id}`);
       }
     } catch (e) { console.warn('[SHOTBOOK] replace old failed', e); }
-    meta.builtParts = Object.fromEntries(parts.map((f) => [f.name, docIdFor([f], 'pdf')]));
-    meta.built = docIdFor([parts[0]], 'pdf'); meta.builtName = parts[0].name;
+    meta.builtParts = Object.fromEntries(parts.map((f, k) => [f.name, ids[k]]));
+    meta.builtSig = Object.fromEntries(parts.map((f, k) => [f.name, sigs[k]]));
+    meta.built = ids[0]; meta.builtName = parts[0].name;
     sbStoreMeta(meta);
     // 開かない分も本棚に入れておく
     for (let k = 0; k < parts.length; k++) {
@@ -1142,7 +1153,7 @@ $('sbClear').onclick = async () => {
   if (!sbItems.length || !confirm('追加した画像を消して、次の本を始めますか？（作った本は本棚に残ります）')) return;
   await sbClearAll();
   sbThumbUrl.forEach((u) => URL.revokeObjectURL(u)); sbThumbUrl.clear();
-  const m = sbLoadMeta(); m.vol = (m.vol || 1) + 1; m.built = undefined; m.builtName = undefined; m.builtParts = undefined; m.splitOffered = false; sbStoreMeta(m);
+  const m = sbLoadMeta(); m.vol = (m.vol || 1) + 1; m.built = undefined; m.builtName = undefined; m.builtParts = undefined; m.builtSig = undefined; m.splitOffered = false; sbStoreMeta(m);
   sbItems = []; sbParts = null; sbSelKey = null;
   await sbOpen();
 };
