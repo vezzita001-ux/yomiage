@@ -104,6 +104,10 @@ export async function autoUpdateServerUrl(force = false): Promise<boolean> {
   lastAuto = Date.now();
   const p = await fetchPublishedUrl();
   if (!p || p === serverBase() || !autoUpdatable()) return false;
+  // 予備（raw）は数分古いことがあるので、新しいURLが本当に応答する時だけ切り替える
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 8000);
+  try { if (!(await fetch(p + '/novel/health', { cache: 'no-store', signal: ctl.signal })).ok) return false; } catch { return false; } finally { clearTimeout(t); }
   setServerUrl(p === location.origin ? '' : p);
   return true;
 }
