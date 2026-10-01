@@ -1,7 +1,7 @@
 // tesseract.js による端末内OCR（日本語：横書き jpn / 縦書き jpn_vert）
 import { createWorker, PSM, type Worker } from 'tesseract.js';
 import { joinLayoutLines, removeCjkSpaces } from './split';
-import { api } from './server';
+import { api, notifyServerFail } from './server';
 
 export type OcrMode = 'auto' | 'horizontal' | 'vertical';
 export interface OcrProgress { label: string; progress: number }
@@ -140,6 +140,9 @@ export async function serverOcr(canvas: HTMLCanvasElement, onProgress: (p: OcrPr
   let r: Response;
   try {
     r = await fetch(api(screen !== false ? `/shot/text?keep=0&split=${split}${screen}` : `/ocr/page?split=${split}`), { method: 'POST', body: blob, headers: { 'Content-Type': 'image/jpeg' }, signal: ctl.signal });
+  } catch (e) {
+    notifyServerFail();
+    throw e;
   } finally {
     clearTimeout(timer);
   }

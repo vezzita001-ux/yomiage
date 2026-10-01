@@ -1,6 +1,6 @@
 // VOICEVOX / AivisSpeech（配信元サーバー上のエンジン）で合成した音声を <audio> で順番に再生する読み上げエンジン
 import type { SpeakResult, SpeakOptions } from './speech';
-import { api } from './server';
+import { api, notifyServerFail } from './server';
 
 export interface VvStyle { id: number; label: string; character: string; order: number }
 
@@ -54,6 +54,7 @@ export class ServerSpeaker {
       this.available = this.styles.length > 0;
     } catch {
       this.available = false;
+      notifyServerFail();
     }
     return this.available;
   }
@@ -94,7 +95,7 @@ export class ServerSpeaker {
         this.lastLatency = performance.now() - t0;
         return URL.createObjectURL(blob);
       });
-      p.catch(() => this.cache.delete(k));
+      p.catch((e) => { this.cache.delete(k); if (e instanceof TypeError || /\s5\d\d$/.test(String(e?.message))) notifyServerFail(); });
       this.cache.set(k, p);
       // 古いものから捨てる
       while (this.cache.size > 12) {

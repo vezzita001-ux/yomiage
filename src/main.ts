@@ -22,7 +22,7 @@ import { loadName, saveName, fileNameFor, bookFor, displayFor, extOf, normVol, s
 import { epubMetaTitle } from './epub';
 import { makePdf, type PdfPage } from './pdfwrite';
 import { estimate as bkEstimate, buildBackup, restoreBackup, inspectBackup, LAST_KEY as BK_LAST } from './backup';
-import { api, serverBase, getServerUrl, setServerUrl, normalizeServerUrl, checkServer, usingRemoteServer } from './server';
+import { api, serverBase, getServerUrl, setServerUrl, normalizeServerUrl, checkServer, usingRemoteServer, autoUpdateServerUrl } from './server';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -2837,12 +2837,24 @@ $('btnSrvSave').onclick = async () => {
   toast(ok ? 'サーバーに接続できました' : 'サーバーに接続できません。URLを確かめてください', 5000);
   await reloadServerEngines();
 };
-$('btnSrvCheck').onclick = () => { runServerCheck(); };
+$('btnSrvCheck').onclick = async () => { if (!(await runServerCheck()) && (await tryAutoServer(true))) runServerCheck(); };
 syncServerUI();
-// GitHub Pages 版をサーバーURLなしで開いた時は案内する
-if (location.hostname.endsWith('github.io') && !getServerUrl()) {
-  setTimeout(() => toast('音声（VOICEVOX・AivisSpeech）やサーバーOCRを使うには、設定の「サーバーURL」にサーバーのURLを入れてください', 8000), 1500);
+// トンネルのURLが変わった時：公開されている今のURL（GitHub の server.json）を見て自動で切り替える
+async function tryAutoServer(force = false) {
+  if (!(await autoUpdateServerUrl(force))) return false;
+  delete $('srvStatus').dataset.checked;
+  syncServerUI();
+  toast(`サーバーURLを自動更新しました（${serverBase().replace(/^https:\/\//, '')}）`, 4000);
+  await reloadServerEngines();
+  return true;
 }
+window.addEventListener('yomiage:serverfail', () => { tryAutoServer(); });
+tryAutoServer(true).then((changed) => {
+  // GitHub Pages 版をサーバーURLなしで開いた時（公開URLも取れなかった時）は案内する
+  if (!changed && location.hostname.endsWith('github.io') && !getServerUrl()) {
+    toast('音声（VOICEVOX・AivisSpeech）やサーバーOCRを使うには、設定の「サーバーURL」にサーバーのURLを入れてください', 8000);
+  }
+});
 
 // ---------------- 起動 ----------------
 syncSettingsUI();
