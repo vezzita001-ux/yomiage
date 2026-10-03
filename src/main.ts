@@ -458,6 +458,53 @@ function bkDownload(f: File) {
   setTimeout(() => URL.revokeObjectURL(u), 10 * 60000);
 }
 function bkMarkSaved(books: number) { localStorage.setItem(BK_LAST, JSON.stringify({ at: Date.now(), books })); $('bkLast').textContent = `前にバックアップを保存した日時：${fmtDate(Date.now())}（本 ${books}冊）`; }
+const bkCanShare = (fs: File[]) => { try { return !!navigator.share && !!navigator.canShare?.({ files: fs }); } catch { return false; } };
+/** できあがったファイルを1個ずつ保存するボタン。iPhone の共有シートは「ボタンを押した直後」でないと開けないので、押してもらってから開く */
+function bkShowReady(files: File[], books: number) {
+  const box = $('bkReadyBtns'); box.innerHTML = '';
+  const share = bkCanShare(files);
+  const n = files.length;
+  $('bkReadyText').textContent = `できました：${n > 1 ? `${n}個のファイル・合計 ` : ''}${fmtSize(files.reduce((a, f) => a + f.size, 0))}。${share
+    ? `下の「保存」ボタンを${n > 1 ? '1つずつ' : ''}押して、出てきた画面で「"ファイル"に保存」（またはGoogleドライブなど）を選んでください。`
+    : `下の「保存」ボタンを${n > 1 ? '1つずつ' : ''}押すと、ダウンロードフォルダに保存されます。`}`;
+  const st = document.createElement('p'); st.className = 'small'; st.setAttribute('aria-live', 'polite');
+  const say = (t: string) => { st.textContent = t; $('bkResult').textContent = t; };
+  const saved = new Set<number>();
+  const done = (i: number, b: HTMLButtonElement, how: string) => {
+    saved.add(i); b.classList.remove('primary'); b.textContent = `✅ ${n > 1 ? `${i + 1}/${n} ` : ''}${how}`;
+    bkMarkSaved(books);
+    say(saved.size >= n ? `✅ バックアップを保存しました（${n}個）。` : `${saved.size} / ${n} 個を保存しました。残りの「保存」ボタンも押してください。`);
+  };
+  files.forEach((f, i) => {
+    const label = n > 1 ? `${i + 1}/${n} を保存` : '保存する';
+    const b = document.createElement('button');
+    b.className = 'wide-btn' + (i === 0 ? ' primary' : '');
+    b.textContent = `${share ? '📤' : '⬇'} ${label}（${fmtSize(f.size)}）`;
+    const nm = document.createElement('p'); nm.className = 'small bk-fname';
+    nm.textContent = f.name;
+    // 共有シートが使えない・うまくいかない時のための、ふつうのダウンロード
+    const a = document.createElement('a');
+    a.className = 'small'; a.textContent = '⬇ 共有でうまくいかない時はこちら（ダウンロード）';
+    a.download = f.name;
+    a.onclick = () => { if (!a.href) a.href = URL.createObjectURL(f); setTimeout(() => done(i, b, 'ダウンロードしました（ダウンロードフォルダ・「ファイル」アプリ）'), 300); };
+    a.href = URL.createObjectURL(f);
+    b.onclick = async () => {
+      say('');
+      if (!share) { a.click(); return; }
+      try {
+        await navigator.share({ files: [f] });
+        done(i, b, '保存しました（共有シートで選んだ場所）');
+      } catch (e) {
+        const err = e as Error;
+        console.warn('[BACKUP] share failed', err?.name, err?.message);
+        if (err?.name === 'AbortError') say(`⚠ ${n > 1 ? `${i + 1}/${n} は` : ''}保存されていません（キャンセルされたか、共有シートが開けませんでした）。もう一度「${label}」を押すか、その下の「ダウンロード」を押してください。`);
+        else { const m = `共有シートを開けませんでした：${err?.name || ''} ${err?.message || e}。その下の「ダウンロード」を押してください`; bkError(m, e); st.textContent = `⚠ ${m}`; }
+      }
+    };
+    if (share) box.append(b, nm, a); else box.append(b, nm);
+  });
+  box.append(st);
+}
 $('bkMake').onclick = async () => {
   if (bkBusy) return;
   bkBusy = true; ($('bkMake') as HTMLButtonElement).disabled = true;
@@ -467,24 +514,21 @@ $('bkMake').onclick = async () => {
     const files = await buildBackup({ books: bkWhat === 'books', bookIds: new Set(bkSel), shots: bkShotsOn, shotGray: ($('bkGray') as HTMLInputElement).checked, partBytes: Number(($('bkPart') as HTMLSelectElement).value) * 1024 * 1024, build: BUILD, onProgress: bkProg });
     const books = bkWhat === 'books' ? bkSel.size : bkLast()?.books ?? 0;
     console.info(`[BACKUP] built ${files.map((f) => `${f.name} ${fmtSize(f.size)}`).join(', ')} in ${Math.round(performance.now() - t0)}ms`);
-    // iPhone の共有シートは「ボタンを押した直後」でないと開けないので、できあがってからもう一度押してもらう
-    const box = $('bkReadyBtns'); box.innerHTML = '';
-    const canShare = (fs: File[]) => { try { return !!navigator.canShare?.({ files: fs }); } catch { return false; } };
-    $('bkReadyText').textContent = `できました：${files.length > 1 ? `${files.length}個のファイル・合計 ` : ''}${fmtSize(files.reduce((a, f) => a + f.size, 0))}。${canShare(files) ? '下のボタンから「ファイルに保存」やGoogleドライブを選んでください。' : 'ダウンロードしました（ダウンロードフォルダ）。'}`;
-    for (const f of files) {
-      const b = document.createElement('button');
-      b.className = 'wide-btn' + (files.length === 1 ? ' primary' : '');
-      b.textContent = `${canShare([f]) ? '📤 保存する' : '⬇ もう一度ダウンロード'}：${f.name}（${fmtSize(f.size)}）`;
-      b.onclick = async () => {
-        if (canShare([f])) {
-          try { await navigator.share({ files: [f], title: f.name }); bkMarkSaved(books); b.textContent = `✅ 保存しました：${f.name}`; return; }
-          catch (e) { if ((e as Error).name === 'AbortError') return; console.warn('[BACKUP] share failed → download', e); }
-        }
-        bkDownload(f); bkMarkSaved(books);
-      };
-      box.append(b);
+    // iPhone の共有シートに渡すファイルは、ひとつながりのメモリ上のデータにしておく
+    // （本棚の Blob をつないだだけの File だと、共有シートが中身を読めず「何も起きない」ことがある）。ここで読めなければエラーを出す
+    let ready = files;
+    const sum = files.reduce((a, f) => a + f.size, 0);
+    if (sum <= 200 * 1024 * 1024) {
+      ready = [];
+      for (let i = 0; i < files.length; i++) {
+        bkProg(`保存の準備をしています（${i + 1} / ${files.length}）`, i, files.length);
+        const f = files[i];
+        const buf = await f.arrayBuffer();
+        if (buf.byteLength !== f.size) throw new Error(`ファイルを最後まで読めませんでした（${f.name}）`);
+        ready.push(new File([buf], f.name, { type: 'application/zip', lastModified: f.lastModified }));
+      }
     }
-    if (!canShare(files)) { for (const f of files) { bkDownload(f); await sleep(500); } bkMarkSaved(books); }
+    bkShowReady(ready, books);
     $('bkReady').hidden = false;
     $('bkProgBox').hidden = true;
     bkPersistQuiet();

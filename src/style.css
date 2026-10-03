@@ -251,6 +251,8 @@ input[type='range'] { height: 40px; }
 #bkSheet select { display: block; width: 100%; min-height: 44px; font-size: 17px; margin-top: 6px; }
 #bkSheet progress { width: 100%; height: 14px; }
 #bkReadyBtns .wide-btn { margin-top: 8px; }
+#bkReadyBtns .bk-fname { margin: 2px 0 0; opacity: .7; word-break: break-all; }
+#bkReadyBtns a.small { display: inline-block; padding: 6px 0 4px; color: var(--accent); }
 
 .bk-list { max-height: 38vh; overflow-y: auto; border: 1px solid var(--line, #ccc); border-radius: 10px; padding: 4px 8px; margin: 4px 0 8px; }
 .bk-item { display: flex; align-items: center; gap: 8px; padding: 7px 0; font-size: 15px; border-bottom: 1px solid rgba(128,128,128,.15); }
