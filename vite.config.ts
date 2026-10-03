@@ -54,7 +54,7 @@ export default defineConfig({
       workbox: {
         // アプリ本体（HTML/JS/CSS/pdf.js worker）を事前キャッシュ
         globPatterns: ['**/*.{js,mjs,css,html,svg,png,ico,webmanifest}'],
-        globIgnores: ['tesseract/**', 'pdfjs/**'],
+        globIgnores: ['tesseract/**', 'pdfjs/**', 'novel/**'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         navigateFallback: `${BASE}index.html`,
         navigateFallbackDenylist: ['voicevox', 'aivis', 'ocr', 'shot', 'video', 'novel'].map((p) => new RegExp(`^${BASE}${p}/`)),
