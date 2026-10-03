@@ -236,7 +236,7 @@ async function renderRecent() {
     open.setAttribute('aria-label', `${label} を続きから開く。${prog}`);
     open.onclick = async () => {
       const files = await getRecent(r.id);
-      if (files) loadFiles(files, false, { screen: r.id.startsWith('shot|') });
+      if (files) loadFiles(files, false, { screen: r.id.startsWith('shot|'), id: r.id });
     };
     const del = document.createElement('button');
     del.className = 'recent-del';
@@ -351,13 +351,20 @@ function bkSeg() {
 let bkEst: Awaited<ReturnType<typeof bkEstimate>> | null = null;
 const bkSel = new Set<string>();
 let bkShotsOn = true;
-function bkSelTotal() {
+const BK_SHRINK = 'yomiage:backup:shrink';
+type BkShrink = 'small' | 'gray' | 'none';
+const bkShrinkSel = () => $('bkShrink') as HTMLSelectElement;
+bkShrinkSel().value = /^(small|gray|none)$/.test(localStorage.getItem(BK_SHRINK) || '') ? localStorage.getItem(BK_SHRINK)! : 'small';
+const bkShrink = (): BkShrink => bkShrinkSel().value as BkShrink;
+/** 小さくした時の本の大きさ（見積もり） */
+const bkBookSize = (b: NonNullable<typeof bkEst>['books'][number], m = bkShrink()) => (m === 'none' ? b.size : b[m] ?? b.size);
+function bkSelTotal(m = bkShrink()) {
   const e = bkEst; if (!e) return 0;
   const withBooks = bkWhat === 'books';
   let t = e.localBytes + e.pageBytes + 4096;
   if (withBooks) {
-    for (const b of e.books) if (bkSel.has(b.id)) t += b.size + 400;
-    if (e.shots && bkShotsOn) t += e.shotBytes * ((($('bkGray') as HTMLInputElement).checked) ? 0.85 : 1);
+    for (const b of e.books) if (bkSel.has(b.id)) t += bkBookSize(b, m) + 400;
+    if (e.shots && bkShotsOn) t += m === 'none' ? e.shotBytes : m === 'small' ? e.shotSmall : e.shotGray;
   }
   return t;
 }
@@ -365,27 +372,29 @@ function bkRenderTotal() {
   const e = bkEst; if (!e) return;
   const withBooks = bkWhat === 'books';
   const total = bkSelTotal();
+  const orig = bkSelTotal('none');
   const part = Number(($('bkPart') as HTMLSelectElement).value) * 1024 * 1024;
   const n = withBooks ? Math.max(1, Math.ceil(total / part)) : 1;
   const nb = e.books.filter((b) => bkSel.has(b.id)).length;
-  $('bkEstimate').textContent = `合計 およそ ${fmtSize(total)}（${withBooks ? `本 ${nb} / ${e.books.length}冊${e.shots && bkShotsOn ? `＋作りかけのスクショ本 ${e.shots}枚` : ''}、` : '本は入れない、'}設定・辞書・読書位置、読み取り結果 ${e.pages}ページ分）${n > 1 ? ` → ${n}個のファイルに分けます` : ''}`;
-  $('bkGrayRow').hidden = !(withBooks && e.shots && bkShotsOn);
+  $('bkEstimate').textContent = `合計 およそ ${fmtSize(total)}（${withBooks ? `本 ${nb} / ${e.books.length}冊${e.shots && bkShotsOn ? `＋作りかけのスクショ本 ${e.shots}枚` : ''}、` : '本は入れない、'}設定・辞書・読書位置、読み取り結果 ${e.pages}ページ分）${withBooks && orig > total * 1.05 ? `。画像を小さくした見積もりで、元のままなら ${fmtSize(orig)}` : ''}${n > 1 ? ` → ${n}個のファイルに分けます` : ''}`;
+  $('bkShrinkRow').hidden = !(withBooks && (e.books.some((b) => b.small != null) || e.shots));
 }
 function bkRenderList() {
   const e = bkEst; if (!e) return;
   const box = $('bkList'); box.innerHTML = '';
-  const row = (name: string, size: number, on: boolean, set: (v: boolean) => void, note = '') => {
+  const row = (name: string, size: number, on: boolean, set: (v: boolean) => void, note = '', size2?: number) => {
     const l = document.createElement('label'); l.className = 'bk-item';
     const c = document.createElement('input'); c.type = 'checkbox'; c.checked = on;
     c.onchange = () => { set(c.checked); bkRenderTotal(); };
     const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name;
     if (note) { const n = document.createElement('span'); n.className = 'note'; n.textContent = note; nm.append(n); nm.style.whiteSpace = 'normal'; }
-    const sz = document.createElement('span'); sz.className = 'sz'; sz.textContent = fmtSize(size);
+    const sz = document.createElement('span'); sz.className = 'sz'; sz.textContent = size2 != null && size2 < size * 0.95 ? `${fmtSize(size)} → 約${fmtSize(size2)}` : fmtSize(size);
     l.append(c, nm, sz); box.append(l);
   };
-  for (const b of e.books) row(b.name, b.size, bkSel.has(b.id), (v) => { if (v) bkSel.add(b.id); else bkSel.delete(b.id); });
+  const m = bkShrink();
+  for (const b of e.books) row(b.name, b.size, bkSel.has(b.id), (v) => { if (v) bkSel.add(b.id); else bkSel.delete(b.id); }, '', bkBookSize(b, m));
   if (e.shots) row(`📸 作りかけのスクショ本（${e.shots}枚）`, e.shotBytes, bkShotsOn, (v) => { bkShotsOn = v; },
-    e.shotsBuiltOnShelf.length ? `作ったPDF（${e.shotsBuiltOnShelf.join('・')}）が本棚にあるので、同じ中身を二重に入れないよう外しています` : '');
+    e.shotsBuiltOnShelf.length ? `作ったPDF（${e.shotsBuiltOnShelf.join('・')}）が本棚にあるので、同じ中身を二重に入れないよう外しています` : '', m === 'none' ? undefined : m === 'small' ? e.shotSmall : e.shotGray);
   $('bkListBox').hidden = bkWhat !== 'books' || !(e.books.length || e.shots);
 }
 async function bkUpdateEstimate(reload = true) {
@@ -402,7 +411,7 @@ async function bkUpdateEstimate(reload = true) {
 }
 $('bkAll').onclick = () => { bkEst?.books.forEach((b) => bkSel.add(b.id)); if (bkEst?.shots) bkShotsOn = true; bkRenderList(); bkRenderTotal(); };
 $('bkNone').onclick = () => { bkSel.clear(); bkShotsOn = false; bkRenderList(); bkRenderTotal(); };
-$('bkGray').addEventListener('change', () => bkRenderTotal());
+bkShrinkSel().addEventListener('change', () => { localStorage.setItem(BK_SHRINK, bkShrink()); bkRenderList(); bkRenderTotal(); });
 async function bkStorageInfo() {
   const st = navigator.storage;
   let text = '';
@@ -511,7 +520,7 @@ $('bkMake').onclick = async () => {
   $('bkReady').hidden = true;
   try {
     const t0 = performance.now();
-    const files = await buildBackup({ books: bkWhat === 'books', bookIds: new Set(bkSel), shots: bkShotsOn, shotGray: ($('bkGray') as HTMLInputElement).checked, partBytes: Number(($('bkPart') as HTMLSelectElement).value) * 1024 * 1024, build: BUILD, onProgress: bkProg });
+    const files = await buildBackup({ books: bkWhat === 'books', bookIds: new Set(bkSel), shots: bkShotsOn, shrink: bkShrink(), partBytes: Number(($('bkPart') as HTMLSelectElement).value) * 1024 * 1024, build: BUILD, onProgress: bkProg });
     const books = bkWhat === 'books' ? bkSel.size : bkLast()?.books ?? 0;
     console.info(`[BACKUP] built ${files.map((f) => `${f.name} ${fmtSize(f.size)}`).join(', ')} in ${Math.round(performance.now() - t0)}ms`);
     // iPhone の共有シートに渡すファイルは、ひとつながりのメモリ上のデータにしておく
@@ -713,7 +722,7 @@ $('btnRename').onclick = () => {
 };
 
 // ---------------- ファイルを開く ----------------
-async function loadFiles(files: File[], isNew = true, opt: { screen?: boolean; how?: string } = {}) {
+async function loadFiles(files: File[], isNew = true, opt: { screen?: boolean; how?: string; id?: string } = {}) {
   if (!files.length) return;
   stopPlayback();
   doc?.destroy?.();
@@ -737,6 +746,8 @@ async function loadFiles(files: File[], isNew = true, opt: { screen?: boolean; h
     showError(`開けませんでした：${(e as Error).message || e}`, e);
     return;
   }
+  // バックアップで小さくして戻した PDF は大きさが元と違うので、本棚の ID（読書位置・読み取り結果のキー）を使う
+  if (opt.id && doc.kind === 'pdf' && opt.id.startsWith('pdf|') && doc.id !== opt.id) { console.info(`[OPEN] shelf id ${opt.id} (file ${doc.id})`); doc.id = opt.id; }
   docFiles = files;
   // 普通に開いた画像でも、スマホの画面の比率（縦長・横長）ならスマホ画面モードにする（Android のスクリーンショットなども）
   if (doc.kind === 'image' && !doc.screen) {

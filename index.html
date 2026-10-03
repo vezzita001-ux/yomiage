@@ -457,7 +457,16 @@
           <p class="small">入れる本を選べます（小さくするため、サムネイル・読み上げ音声などの作り直せるものは入れません）</p>
           <div class="bk-list-btns"><button id="bkAll" class="small-btn" type="button">全部選ぶ</button><button id="bkNone" class="small-btn" type="button">全部外す</button></div>
           <div id="bkList" class="bk-list"></div>
-          <label id="bkGrayRow" class="bk-item" hidden><input type="checkbox" id="bkGray"><span>スクショ本の画像を白黒にして小さくする（文字の読み取りには十分）</span></label>
+          <div id="bkShrinkRow" hidden>
+            <label class="field">ページの画像
+              <select id="bkShrink">
+                <option value="small">小さくする（おすすめ）</option>
+                <option value="gray">もっと小さくする（白黒）</option>
+                <option value="none">元のまま（いちばん大きい）</option>
+              </select>
+            </label>
+            <p class="muted small">動画読み取り・スクショ本で作った本と作りかけのスクショ本の画像を、同じ解像度のまま画質を少し下げて入れ直します（文字の読み取り・表示には十分）。読書位置・読み取り結果はそのまま残ります。</p>
+          </div>
         </div>
         <p id="bkEstimate" class="small" aria-live="polite"></p>
         <button id="bkMake" class="wide-btn primary">💾 バックアップを保存</button>

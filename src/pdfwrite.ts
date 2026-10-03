@@ -5,7 +5,7 @@
 import type { OcrLine } from './ocr';
 
 export interface PageOcr { lines: OcrLine[]; width: number; height: number; skip?: string; raw?: string }
-export interface PdfPage { blob: Blob; w: number; h: number; ocr?: PageOcr | null }
+export interface PdfPage { blob: Blob; w: number; h: number; ocr?: PageOcr | null; /** JPEG の色（省略時 DeviceRGB。白黒1色の JPEG をそのまま入れる時は DeviceGray） */ cs?: 'DeviceRGB' | 'DeviceGray' | 'DeviceCMYK' }
 export const OCR_KEY = 'YomiageOCR';
 export const OCR_VERSION = 1;
 
@@ -80,7 +80,7 @@ export function makePdf(pages: PdfPage[], title: string): Blob {
     const cl = enc.encode(content).length;
     obj(pageNo(i), () => put(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /XObject << /Im0 ${pageNo(i) + 2} 0 R >> /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents ${pageNo(i) + 1} 0 R >>`));
     obj(pageNo(i) + 1, () => put(`<< /Length ${cl} >>\nstream\n${content}\nendstream`));
-    obj(pageNo(i) + 2, () => { put(`<< /Type /XObject /Subtype /Image /Width ${p.w} /Height ${p.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.blob.size} >>\nstream\n`); put(p.blob); put('\nendstream'); });
+    obj(pageNo(i) + 2, () => { put(`<< /Type /XObject /Subtype /Image /Width ${p.w} /Height ${p.h} /ColorSpace /${p.cs || 'DeviceRGB'} /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.blob.size} >>\nstream\n`); put(p.blob); put('\nendstream'); });
   });
   const total = FIRST + n * 3;
   const xref = len;

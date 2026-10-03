@@ -3,11 +3,15 @@
 // ・復元も zip 全体は読まず、File.slice で必要な部分だけ取り出す
 // ・中身：manifest.json（形式・版）、local.json（localStorage の yomiage:*）、recents.json＋files/*.bin（本棚の本）、
 //         pages-*.json（OCR結果）、shotbook.json＋shot/*.bin（作りかけのスクショ本）
+// ・よみあげで作った画像の PDF（動画読み取り・スクショ本）は、ページの JPEG を同じ画素数のまま画質を下げて作り直して入れる（pdfshrink.ts）。
+//   本の ID（読書位置・読み取り結果のキー）は元のまま recents.json に入るので、復元した本は続きから・読み取り済みのページはサーバー無しで読める
+// ・中身がまったく同じファイル（大きさと CRC が同じ）は1つだけ入れる
 import {
   listRecent, putRecentRecord, recentIds, pageKeys, eachPages, putPages, countPages, clearBooksAndPages,
   type RecentFile, type CachedPage, type Position,
 } from './storage';
-import { listItems as sbList, putMany as sbPutMany, clearItems as sbClear, makeThumb, shrinkForBackup, loadMeta as sbLoadMeta, type ShotItem } from './shotbook';
+import { listItems as sbList, putMany as sbPutMany, clearItems as sbClear, makeThumb, loadMeta as sbLoadMeta, type ShotItem } from './shotbook';
+import { shrinkPdf, estimateShrink, reencodeJpeg, SHRINK_Q, type ShrinkMode } from './pdfshrink';
 
 export const BACKUP_FORMAT = 'yomiage-backup';
 export const BACKUP_VERSION = 1;
@@ -22,6 +26,8 @@ export interface Manifest {
   format: string; version: number; id: string; created: number; build: string; origin: string;
   part: number; parts: number; books: boolean;
   counts: { books: number; bookBytes: number; pages: number; shots: number; localKeys: number };
+  /** 画像を小さくしたか（無ければ元のまま） */
+  shrink?: ShrinkMode;
 }
 
 // ---------------- CRC32 ----------------
@@ -47,10 +53,10 @@ class ZipWriter {
     this.dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
     this.dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
   }
-  async add(name: string, data: Blob | Uint8Array) {
+  async add(name: string, data: Blob | Uint8Array, knownCrc?: number) {
     const nb = enc.encode(name);
     const size = data instanceof Blob ? data.size : data.length;
-    const crc = data instanceof Blob ? await crcBlob(data) : crcUpdate(0, data);
+    const crc = knownCrc ?? (data instanceof Blob ? await crcBlob(data) : crcUpdate(0, data));
     const lh = new DataView(new ArrayBuffer(30));
     lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
     lh.setUint16(10, this.dosTime, true); lh.setUint16(12, this.dosDate, true);
@@ -110,9 +116,12 @@ export async function readZip(f: Blob): Promise<Map<string, Blob>> {
 }
 
 // ---------------- 大きさの見積もり ----------------
-export interface BookEntry { id: string; name: string; size: number; kind: string }
+/** small/gray：画像を小さくした時の見積もり（小さくできない本は無し） */
+export interface BookEntry { id: string; name: string; size: number; kind: string; small?: number; gray?: number }
 export interface Estimate {
   books: BookEntry[]; bookBytes: number; shots: number; shotBytes: number;
+  /** 作りかけのスクショ本の画像を小さくした時の見積もり */
+  shotSmall: number; shotGray: number;
   /** 作りかけのスクショ本の画像が、本棚の本（作ったPDF）と同じものか（同じなら既定では入れない） */
   shotsBuiltOnShelf: string[];
   pages: number; pageBytes: number; localBytes: number;
@@ -123,12 +132,33 @@ export async function estimate(): Promise<Estimate> {
   let pages = 0; try { pages = await countPages(); } catch { /* 無し */ }
   let localBytes = 0;
   for (const k of Object.keys(localStorage)) if (k.startsWith(LS_PREFIX) && !LS_SKIP.test(k)) localBytes += (k.length + (localStorage.getItem(k) || '').length) * 1.5;
-  const books = recents.map((r) => ({ id: r.id, name: r.name, size: r.files.reduce((b, f) => b + (f.blob?.size || 0), 0), kind: r.id.split('|')[0] }));
+  const books: BookEntry[] = [];
+  for (const r of recents) {
+    const b: BookEntry = { id: r.id, name: r.name, size: r.files.reduce((a, f) => a + (f.blob?.size || 0), 0), kind: r.id.split('|')[0] };
+    // 画像の PDF は数ページだけ作り直して、小さくした時の大きさを見積もる
+    let small = 0, gray = 0, any = false;
+    for (let k = 0; k < r.files.length; k++) {
+      const f = r.files[k];
+      const e = isPdf(f) ? await estimateShrink(f.blob, `${r.id}#${k}#${f.blob.size}`).catch(() => null) : null;
+      if (e) any = true;
+      small += e ? e.small : f.blob.size; gray += e ? e.gray : f.blob.size;
+    }
+    if (any) { b.small = small; b.gray = gray; }
+    books.push(b);
+  }
   const built = Object.values(sbLoadMeta().builtParts || {});
   const shotsBuiltOnShelf = shots.length ? recents.filter((r) => built.includes(r.id)).map((r) => r.name) : [];
+  const shotBytes = shots.reduce((a, s) => a + s.blob.size + 300 + (s.ocr ? 60 * (s.ocr.lines.length + 1) : 0), 0);
+  // スクショ本も数枚だけ試して比べる
+  let r0 = 0, rs = 0, rg = 0;
+  for (const s of [shots[Math.floor(shots.length / 3)], shots[Math.floor(shots.length * 2 / 3)]].filter(Boolean)) {
+    r0 += s.blob.size;
+    rs += (await reencodeJpeg(s.blob, s.w, s.h, SHRINK_Q.small, false).catch(() => ({ blob: s.blob }))).blob.size;
+    rg += (await reencodeJpeg(s.blob, s.w, s.h, SHRINK_Q.gray, true).catch(() => ({ blob: s.blob }))).blob.size;
+  }
   return {
     books, bookBytes: books.reduce((a, b) => a + b.size, 0), shots: shots.length,
-    shotBytes: shots.reduce((a, s) => a + s.blob.size + 300 + (s.ocr ? 60 * (s.ocr.lines.length + 1) : 0), 0),
+    shotBytes, shotSmall: r0 ? Math.round(shotBytes * rs / r0) : shotBytes, shotGray: r0 ? Math.round(shotBytes * rg / r0) : shotBytes,
     shotsBuiltOnShelf, pages, pageBytes: pages * 2500, localBytes,
   };
 }
@@ -137,6 +167,7 @@ export async function estimate(): Promise<Estimate> {
 const b64 = (u: Uint8Array) => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s); };
 const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const json = (v: unknown) => enc.encode(JSON.stringify(v));
+const isPdf = (f: { name: string; type: string }) => /pdf/i.test(f.type || '') || /\.pdf$/i.test(f.name);
 
 export interface BuildOptions {
   books: boolean;
@@ -144,7 +175,9 @@ export interface BuildOptions {
   bookIds?: Set<string>;
   /** 作りかけのスクショ本の画像を入れる */
   shots?: boolean;
-  /** スクショ本の画像をグレースケールの JPEG にして小さくする */
+  /** 画像を小さくする（small＝画質を少し下げる／gray＝白黒にしてもう少し下げる）。本（よみあげで作った画像の PDF）と作りかけのスクショ本の両方 */
+  shrink?: ShrinkMode;
+  /** 古い呼び方（スクショ本だけ白黒）。shrink が無い時だけ使う */
   shotGray?: boolean;
   partBytes: number; build: string; onProgress?: Progress;
 }
@@ -155,12 +188,13 @@ export async function buildBackup(o: BuildOptions): Promise<File[]> {
   const stamp = new Date(created);
   const ymd = `${stamp.getFullYear()}${String(stamp.getMonth() + 1).padStart(2, '0')}${String(stamp.getDate()).padStart(2, '0')}-${String(stamp.getHours()).padStart(2, '0')}${String(stamp.getMinutes()).padStart(2, '0')}`;
   const prog = o.onProgress || (() => {});
+  const shrink: ShrinkMode = o.shrink ?? (o.shotGray ? 'gray' : 'none');
   const recents: RecentFile[] = o.books ? (await listRecent().catch(() => [] as RecentFile[])).filter((r) => !o.bookIds || o.bookIds.has(r.id)) : [];
   const shots: ShotItem[] = o.books && o.shots !== false ? await sbList().catch(() => []) : [];
   const totalWork = recents.reduce((a, r) => a + r.size, 0) + shots.reduce((a, s) => a + s.blob.size, 0) + 1;
   let done = 0;
-  const zips: Array<{ w: ZipWriter; books: number; bookBytes: number; pages: number; shots: number; localKeys: number }> = [];
-  const newZip = () => { const z = { w: new ZipWriter(), books: 0, bookBytes: 0, pages: 0, shots: 0, localKeys: 0 }; zips.push(z); return z; };
+  const zips: Array<{ w: ZipWriter; books: number; bookBytes: number; pages: number; shots: number; localKeys: number; same: Map<string, string> }> = [];
+  const newZip = () => { const z = { w: new ZipWriter(), books: 0, bookBytes: 0, pages: 0, shots: 0, localKeys: 0, same: new Map<string, string>() }; zips.push(z); return z; };
   let z = newZip();
   // 1冊目：設定・辞書・読書位置など（localStorage）と OCR結果
   prog('設定・辞書・読書位置をまとめています', 0, totalWork);
@@ -175,18 +209,39 @@ export async function buildBackup(o: BuildOptions): Promise<File[]> {
   let fileNo = 0;
   const flush = async () => { if (recs.length) { await z.w.add('recents.json', json(recs)); recs = []; } };
   for (const r of recents) {
-    const need = r.files.reduce((a, f) => a + (f.blob?.size || 0) + 200, 0);
+    // 画像の PDF は小さく作り直す（ID・ファイル名はそのまま）
+    const put: Array<{ f: RecentFile['files'][number]; blob: Blob; shrunk: boolean }> = [];
+    for (const f of r.files) {
+      let blob = f.blob, shrunk = false;
+      if (shrink !== 'none' && isPdf(f)) {
+        const base = done;
+        prog(`本の画像を小さくしています：${r.name}`, done, totalWork);
+        const s = await shrinkPdf(f.blob, shrink, undefined, (d, t) => { if (d % 5 === 0 || d === t) prog(`本の画像を小さくしています：${r.name}（${d} / ${t}ページ）`, base + f.blob.size * d / t * 0.9, totalWork); })
+          .catch((e) => { console.warn('[BACKUP] shrink failed → original', r.name, e); return null; });
+        if (s) { console.info(`[BACKUP] shrink ${r.name}: ${f.blob.size} → ${s.size} (${shrink})`); blob = s; shrunk = true; }
+      }
+      put.push({ f, blob, shrunk });
+    }
+    const need = put.reduce((a, x) => a + x.blob.size + 200, 0);
     if (z.w.offset > 4096 && z.w.offset + need > o.partBytes) { await flush(); z = newZip(); }
     const files = [];
-    for (const f of r.files) {
-      const path = `files/${String(fileNo++).padStart(6, '0')}.bin`;
+    let size = 0;
+    for (const { f, blob, shrunk } of put) {
       prog(`本をまとめています：${r.name}`, done, totalWork);
-      await z.w.add(path, f.blob);
-      files.push({ name: f.name, type: f.type, lastModified: f.lastModified, path, size: f.blob.size });
+      const crc = await crcBlob(blob);
+      const same = `${blob.size}:${crc}`;
+      let path = z.same.get(same);
+      if (!path) { // 同じ中身のファイルは1回だけ入れる
+        path = `files/${String(fileNo++).padStart(6, '0')}.bin`;
+        await z.w.add(path, blob, crc);
+        z.same.set(same, path);
+      }
+      files.push({ name: f.name, type: f.type, lastModified: f.lastModified, path, size: blob.size, ...(shrunk ? { origSize: f.blob.size } : {}) });
+      size += blob.size;
       done += f.blob.size;
     }
-    recs.push({ id: r.id, name: r.name, size: r.size, opened: r.opened, files });
-    z.books++; z.bookBytes += r.size;
+    recs.push({ id: r.id, name: r.name, size, opened: r.opened, files });
+    z.books++; z.bookBytes += size;
   }
   await flush();
   // 作りかけのスクショ本
@@ -194,8 +249,8 @@ export async function buildBackup(o: BuildOptions): Promise<File[]> {
   const flushShots = async () => { if (sitems.length) { await z.w.add('shotbook.json', json(sitems)); sitems = []; } };
   let sn = 0;
   for (const it of shots) {
-    // サムネイルは入れない（復元の時に作り直す）。グレースケールにするとさらに小さく
-    const img = o.shotGray ? await shrinkForBackup(it.blob).catch(() => it.blob) : it.blob;
+    // サムネイルは入れない（復元の時に作り直す）。小さくする時は画質を下げる（白黒ならさらに）
+    const img = shrink !== 'none' ? (await reencodeJpeg(it.blob, it.w, it.h, SHRINK_Q[shrink], shrink === 'gray').catch(() => ({ blob: it.blob }))).blob : it.blob;
     const need = img.size + 800;
     if (z.w.offset > 4096 && z.w.offset + need > o.partBytes) { await flushShots(); z = newZip(); }
     const bp = `shot/${String(sn).padStart(6, '0')}.jpg`; sn++;
@@ -213,7 +268,7 @@ export async function buildBackup(o: BuildOptions): Promise<File[]> {
     const zz = zips[i];
     const m: Manifest = {
       format: BACKUP_FORMAT, version: BACKUP_VERSION, id, created, build: o.build, origin: location.origin, part: i + 1, parts: zips.length, books: o.books,
-      counts: { books: zz.books, bookBytes: zz.bookBytes, pages: zz.pages, shots: zz.shots, localKeys: zz.localKeys },
+      counts: { books: zz.books, bookBytes: zz.bookBytes, pages: zz.pages, shots: zz.shots, localKeys: zz.localKeys }, shrink,
     };
     await zz.w.add('manifest.json', json(m));
     const name = zips.length > 1 ? `yomiage-backup-${ymd}-${i + 1}of${zips.length}.zip` : `yomiage-backup-${ymd}.zip`;
