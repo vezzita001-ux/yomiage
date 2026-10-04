@@ -21,6 +21,8 @@ export interface Settings {
   ocrEngine: 'server' | 'device';
   imgLarge: boolean;
   spread: 'auto' | 'on' | 'off';
+  /** 挿絵のページ（文字が無い・ごく少ない画像ページ）で止まる秒数。0＝止まらない、-1＝タップするまで */
+  illustWait: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -42,6 +44,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ocrEngine: 'server',
   imgLarge: false,
   spread: 'auto',
+  illustWait: 5,
 };
 
 const SKEY = 'yomiage:settings';

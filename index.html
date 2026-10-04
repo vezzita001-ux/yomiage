@@ -210,6 +210,16 @@
           </div>
         </div>
         <label class="check"><input id="chkImg" type="checkbox" /> ページの画像も表示する（PDF・画像）</label>
+        <div class="field"><label for="illustSel">挿絵のページで止まる秒数</label>
+          <select id="illustSel">
+            <option value="0">0秒（止まらない）</option>
+            <option value="3">3秒</option>
+            <option value="5">5秒</option>
+            <option value="10">10秒</option>
+            <option value="-1">タップするまで</option>
+          </select>
+          <span class="muted small">文字が無い（ほとんど無い）画像のページで、絵を大きく見せてから次のページへ進みます。「🖼 挿絵」の知らせか画像をタップ（または ⏭）すると、すぐ次へ。</span>
+        </div>
         <label class="check"><input id="chkWake" type="checkbox" /> 読み上げ中は画面を消さない</label>
         <details id="scBox" class="diag howto">
           <summary>iPhoneのショートカットで読み上げる（スクショ読み上げ）</summary>
@@ -556,6 +566,7 @@
       </div>
     </div>
 
+    <button id="illustNote" class="illustnote" hidden></button>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

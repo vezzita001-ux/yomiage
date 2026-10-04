@@ -1523,6 +1523,7 @@ async function showPage(i: number, sent = 0): Promise<boolean> {
   $<HTMLButtonElement>('btnPrevPage').disabled = i <= 0;
   $<HTMLButtonElement>('btnNextPage').disabled = i >= d.pageCount - 1;
   $('text').innerHTML = '<p class="muted">読み込み中…</p>';
+  illustShow = false;
   renderImage(i);
   setStatus('文字を取り出し中…');
   let data: PageData;
@@ -1602,7 +1603,8 @@ async function renderImage(i: number) {
   const box = $('pageImg');
   box.innerHTML = '';
   box.classList.toggle('large', settings.imgLarge);
-  if (!doc?.hasImages || !pageHasImage(i) || !settings.showImage) { box.hidden = true; return; }
+  box.classList.remove('illust');
+  if (!doc?.hasImages || !pageHasImage(i) || !(settings.showImage || illustShow)) { box.hidden = true; return; }
   box.hidden = false;
   try {
     const c = await getImage(i);
@@ -1676,6 +1678,7 @@ function drawBoxes() {
 
 /** 画像の行をタップ → その行を含む文から読む */
 function onImageTap(ev: MouseEvent) {
+  if (illustEnd) return; // 挿絵で止まっている間のタップは「すぐ次へ」（#pageImg の側で）
   const svg = ev.currentTarget as SVGSVGElement;
   const lines = pageData?.lines;
   if (!lines || !pageData?.width) return;
@@ -1798,6 +1801,79 @@ function savePos() {
   if (doc) savePosition(doc.id, { page: pageIdx, sentence: sentIdx, pageCount: doc.pageCount, updated: Date.now() });
 }
 
+// ---------------- 挿絵のページで止まる ----------------
+let illustShow = false; // 「画像を隠す」の時も、挿絵で止まっている間だけ画像を出す
+let illustEnd: (() => void) | null = null; // 止まっている間：呼ぶと待つのをやめる（タップ・⏭・停止）
+
+/** 画像がほぼ真っ白（白紙・ページ番号だけ）か。縮小して、紙の色から外れた点の割合を見る */
+function isBlankImage(c: HTMLCanvasElement): boolean {
+  if (!c.width || !c.height) return true;
+  const w = 160, h = Math.max(1, Math.round((160 * c.height) / c.width));
+  const t = document.createElement('canvas');
+  t.width = w; t.height = h;
+  const g = t.getContext('2d', { willReadFrequently: true });
+  if (!g) return false;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(c, 0, 0, w, h);
+  const x0 = Math.round(w * 0.06), y0 = Math.round(h * 0.06); // 端（スキャンの影・枠）は見ない
+  const d = g.getImageData(x0, y0, w - 2 * x0, h - 2 * y0).data;
+  t.width = 0; t.height = 0;
+  const n = d.length / 4;
+  const lum = new Uint8Array(n);
+  const hist = new Uint32Array(256);
+  for (let k = 0, j = 0; k < n; k++, j += 4) { const l = (d[j] * 299 + d[j + 1] * 587 + d[j + 2] * 114) / 1000 | 0; lum[k] = l; hist[l]++; }
+  let med = 0;
+  for (let acc = 0; med < 255; med++) { acc += hist[med]; if (acc >= n / 2) break; }
+  let ink = 0;
+  for (let k = 0; k < n; k++) if (Math.abs(lum[k] - med) > 40) ink++;
+  return ink / n < 0.004;
+}
+
+/** 挿絵のページか：画像のページで、読める文字が無い・ごく少ない（見出し・ページ番号くらい）。警告・重複の画面と白紙は除く */
+async function isIllustPage(i: number): Promise<boolean> {
+  if (!doc || loadedPage !== i || !pageRaw || !pageHasImage(i)) return false;
+  if (pageRaw.skip === 'warning' || pageRaw.skip === 'dup') return false;
+  const chars = (pageData?.text || '').replace(/[\s\p{P}\p{S}]/gu, '').length;
+  if (chars >= 15) return false;
+  try {
+    const blank = isBlankImage(await getImage(i));
+    console.info(`[ILLUST] page ${i + 1} chars=${chars} blank=${blank}`);
+    return !blank;
+  } catch { return false; }
+}
+
+/** 挿絵を大きく見せる（画像を隠す設定でも一時的に出し、見える位置へ） */
+async function showIllust(i: number) {
+  const box = $('pageImg');
+  if (box.hidden || !box.querySelector('img')) { illustShow = true; await renderImage(i); }
+  if (pageIdx !== i || box.hidden) return;
+  box.classList.add('illust');
+  box.scrollTop = 0; box.scrollLeft = 0;
+  const topH = parseFloat(getComputedStyle(box).top) || 52;
+  window.scrollTo({ top: Math.max(0, window.scrollY + box.getBoundingClientRect().top - topH), behavior: 'smooth' });
+}
+
+/** 挿絵で止まる：sec 秒（-1 はタップするまで）。知らせ・画像のタップ、⏭、一時停止・停止で終わる */
+function illustPause(sec: number): Promise<void> {
+  return new Promise((resolve) => {
+    const note = $('illustNote');
+    let left = sec;
+    let timer = 0;
+    const show = () => {
+      note.textContent = sec < 0 ? '🖼 挿絵（タップで次へ）' : `🖼 挿絵（あと${left}秒で次へ）`;
+      note.setAttribute('aria-label', '挿絵：タップするとすぐ次のページへ');
+    };
+    const end = () => { clearInterval(timer); if (illustEnd === end) illustEnd = null; note.hidden = true; resolve(); };
+    illustEnd?.();
+    illustEnd = end;
+    show();
+    note.hidden = false;
+    if (sec > 0) timer = window.setInterval(() => { left--; if (left <= 0) end(); else show(); }, 1000);
+  });
+}
+$('illustNote').onclick = () => illustEnd?.();
+$('pageImg').addEventListener('click', () => illustEnd?.());
+
 // ---------------- 読み上げループ ----------------
 function updatePlayBtn() {
   const b = $('btnPlay');
@@ -1814,6 +1890,14 @@ async function runLoop(token: number) {
       if (!ok) { await sleep(100); continue; }
     }
     if (sentIdx >= sentences.length) {
+      // 挿絵のページ：絵を見せて少し止まってから次へ
+      if (settings.illustWait !== 0 && await isIllustPage(pageIdx)) {
+        if (token !== playToken) return;
+        await showIllust(pageIdx);
+        if (token !== playToken) return;
+        await illustPause(settings.illustWait);
+        if (token !== playToken || !doc) return;
+      }
       if (pageIdx + 1 >= doc.pageCount) {
         playing = false;
         sentIdx = Math.max(0, sentences.length - 1);
@@ -1879,6 +1963,7 @@ function play() {
 function stopPlayback() {
   playing = false;
   ++playToken;
+  illustEnd?.();
   speaker.cancel();
   vv.cancel();
   av.cancel();
@@ -1913,6 +1998,7 @@ $('btnStop').onclick = () => { stopPlayback(); sentIdx = 0; highlight(false); wi
 $('btnNext').onclick = () => {
   unlockAll();
   if (!doc) return;
+  if (illustEnd) { illustEnd(); return; } // 挿絵で止まっている → すぐ次へ
   if (sentIdx + 1 < sentences.length) jump(pageIdx, sentIdx + 1);
   else if (pageIdx + 1 < doc.pageCount) jump(pageIdx + 1, 0);
 };
@@ -2748,6 +2834,8 @@ function syncSettingsUI() {
   $('fontOut').textContent = `${settings.fontSize}px`;
   $<HTMLInputElement>('chkImg').checked = settings.showImage;
   $<HTMLInputElement>('chkWake').checked = settings.wakeLock;
+  $<HTMLSelectElement>('illustSel').value = String(settings.illustWait);
+  if ($<HTMLSelectElement>('illustSel').selectedIndex < 0) $<HTMLSelectElement>('illustSel').value = '5';
   document.querySelectorAll<HTMLButtonElement>('#themeSeg button').forEach((b) => b.classList.toggle('on', b.dataset.theme === settings.theme));
   updateOcrButtons();
 }
@@ -2760,6 +2848,7 @@ $<HTMLInputElement>('rate').oninput = (e) => { settings.rate = Number((e.target 
 $<HTMLInputElement>('pitch').oninput = (e) => { settings.pitch = Number((e.target as HTMLInputElement).value); $('pitchOut').textContent = settings.pitch.toFixed(2); saveSettings(settings); };
 $<HTMLInputElement>('font').oninput = (e) => { settings.fontSize = Number((e.target as HTMLInputElement).value); $('fontOut').textContent = `${settings.fontSize}px`; applyTheme(); saveSettings(settings); };
 $<HTMLInputElement>('chkImg').onchange = (e) => { settings.showImage = (e.target as HTMLInputElement).checked; saveSettings(settings); updateOcrButtons(); if (doc) renderImage(pageIdx); };
+$<HTMLSelectElement>('illustSel').onchange = (e) => { settings.illustWait = Number((e.target as HTMLSelectElement).value); saveSettings(settings); };
 $<HTMLInputElement>('chkWake').onchange = (e) => { settings.wakeLock = (e.target as HTMLInputElement).checked; saveSettings(settings); if (!settings.wakeLock) releaseWake(); };
 document.querySelectorAll<HTMLButtonElement>('#themeSeg button').forEach((b) => {
   b.onclick = () => { settings.theme = b.dataset.theme as Settings['theme']; saveSettings(settings); applyTheme(); syncSettingsUI(); };

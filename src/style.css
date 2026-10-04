@@ -266,3 +266,12 @@ input[type='range'] { height: 40px; }
 .bk-item .sz { flex: none; opacity: .75; font-variant-numeric: tabular-nums; }
 .bk-item .note { display: block; font-size: 12px; opacity: .75; white-space: normal; }
 .bk-list-btns { display: flex; gap: 8px; }
+
+/* 挿絵のページ：絵を大きく見せて少し止まる（iPhone SE でも知らせ・操作ボタンに重ならない高さ） */
+.pageimg.illust { max-height: min(62vh, calc(100vh - var(--topbar-h, 52px) - 210px)); }
+.pageimg.illust .imgwrap { width: fit-content; max-width: 100%; margin: 0 auto; }
+.pageimg.illust img { max-height: calc(min(62vh, calc(100vh - var(--topbar-h, 52px) - 210px)) - 8px); max-width: 100%; width: auto; }
+.illustnote { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 122px); z-index: 31; min-height: 40px; padding: 6px 16px; border: none; border-radius: 20px; background: rgba(0,0,0,.72); color: #fff; font-size: 15px; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+.illustnote[hidden] { display: none; }
+.illustnote:not([hidden]) ~ .toast { bottom: calc(env(safe-area-inset-bottom) + 172px); } /* 知らせとお知らせ（toast）が重ならないように */
+.pageimg.illust ~ .spacer { height: calc(280px + env(safe-area-inset-bottom)); } /* 文字の少ないページでも、絵を上に寄せられるだけスクロールできるように */
