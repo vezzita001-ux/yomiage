@@ -522,13 +522,25 @@ $('bkMake').onclick = async () => {
   $('bkReady').hidden = true;
   try {
     const t0 = performance.now();
-    const files = await buildBackup({ books: bkWhat === 'books', bookIds: new Set(bkSel), shots: bkShotsOn, shrink: bkShrink(), partBytes: Number(($('bkPart') as HTMLSelectElement).value) * 1024 * 1024, build: BUILD, onProgress: bkProg });
+    // 見積もり（画面の「合計 およそ」）と、画像を小さくしなかった時の見積もり（＝できるファイルの上限の目安）
+    const est = bkEst ? bkSelTotal() : 0;
+    const estMax = bkEst ? Math.max(est, bkSelTotal('none')) : 0;
+    const warns: string[] = [];
+    const files = await buildBackup({ books: bkWhat === 'books', bookIds: new Set(bkSel), shots: bkShotsOn, shrink: bkShrink(), partBytes: Number(($('bkPart') as HTMLSelectElement).value) * 1024 * 1024, build: BUILD, onProgress: bkProg, onWarn: (m) => warns.push(m) });
     const books = bkWhat === 'books' ? bkSel.size : bkLast()?.books ?? 0;
-    console.info(`[BACKUP] built ${files.map((f) => `${f.name} ${fmtSize(f.size)}`).join(', ')} in ${Math.round(performance.now() - t0)}ms`);
+    const sum = files.reduce((a, f) => a + f.size, 0);
+    console.info(`[BACKUP] built ${files.map((f) => `${f.name} ${fmtSize(f.size)}`).join(', ')} in ${Math.round(performance.now() - t0)}ms (estimate ${est}, max ${estMax}, total ${sum})`);
+    // 安全のため：見積もりよりずっと大きい（1.2倍より上）時は、中身が正しくない可能性が高いので保存させない
+    if (estMax && sum > estMax * 1.2) {
+      console.error('[BACKUP] too large vs estimate', sum, estMax);
+      $('bkResult').textContent = `⚠ できたバックアップ（${fmtSize(sum)}）が見積もり（およそ ${fmtSize(est)}${estMax > est * 1.05 ? `、画像を小さくしなくても ${fmtSize(estMax)}` : ''}）よりずっと大きいので、保存をやめました。中身が正しくない可能性があります。アプリを開き直してから、もう一度「バックアップを保存」を押してください。${warns.length ? `（${warns.join(' ')}）` : ''}`;
+      toast('バックアップの大きさがおかしいので、保存をやめました', 6000);
+      $('bkProgBox').hidden = true;
+      return;
+    }
     // iPhone の共有シートに渡すファイルは、ひとつながりのメモリ上のデータにしておく
     // （本棚の Blob をつないだだけの File だと、共有シートが中身を読めず「何も起きない」ことがある）。ここで読めなければエラーを出す
     let ready = files;
-    const sum = files.reduce((a, f) => a + f.size, 0);
     if (sum <= 200 * 1024 * 1024) {
       ready = [];
       for (let i = 0; i < files.length; i++) {
@@ -540,6 +552,7 @@ $('bkMake').onclick = async () => {
       }
     }
     bkShowReady(ready, books);
+    if (warns.length) $('bkReadyText').textContent += ` ⚠ ${warns.join(' ')}`;
     $('bkReady').hidden = false;
     $('bkProgBox').hidden = true;
     bkPersistQuiet();

@@ -6,6 +6,10 @@
 // ・よみあげで作った画像の PDF（動画読み取り・スクショ本）は、ページの JPEG を同じ画素数のまま画質を下げて作り直して入れる（pdfshrink.ts）。
 //   本の ID（読書位置・読み取り結果のキー）は元のまま recents.json に入るので、復元した本は続きから・読み取り済みのページはサーバー無しで読める
 // ・中身がまったく同じファイル（大きさと CRC が同じ）は1つだけ入れる
+// ・Safari（WebKit）の不具合対策：ファイルの一部分（File.slice）をそのまま IndexedDB に入れると、WebKit はディスクに「元のファイル全体」を書く
+//   （.size は一部分の大きさのままなのに、アプリを開き直すと中身はファイル全体になる）。
+//   → 復元では zip から取り出した本・画像をひとつながりのデータにしてから入れる（solid）。
+//     前の版で復元して中身が zip 全体になってしまった本・画像は、バックアップの前にその zip から本当の中身を取り出して直す（repairStored）
 import {
   listRecent, putRecentRecord, recentIds, pageKeys, eachPages, putPages, countPages, clearBooksAndPages,
   type RecentFile, type CachedPage, type Position,
@@ -39,6 +43,28 @@ async function crcBlob(b: Blob): Promise<number> {
   let crc = 0;
   for (let i = 0; i < b.size; i += CHUNK) crc = crcUpdate(crc, new Uint8Array(await b.slice(i, i + CHUNK).arrayBuffer()));
   return crc;
+}
+
+// ---------------- Safari の「一部分を IndexedDB に入れると全体が入る」対策 ----------------
+/** ひとつながりの（メモリ上の）データにする。8MB ずつ写すので、メモリはその本の大きさ＋8MB ほど */
+async function solid(b: Blob, type: string): Promise<Blob> {
+  const parts: ArrayBuffer[] = [];
+  for (let i = 0; i < b.size; i += 2 * CHUNK) parts.push(await b.slice(i, Math.min(b.size, i + 2 * CHUNK)).arrayBuffer());
+  const out = new Blob(parts, { type });
+  if (out.size !== b.size) throw new Error('データを最後まで読めませんでした');
+  return out;
+}
+/** 実際に読める大きさ（つないだ時の大きさ）が .size と違う＝前の版の復元で中身が zip 全体になっている */
+const inflated = (b: Blob) => new Blob([b]).size !== b.size;
+/** 中身が zip 全体になってしまった Blob から、本当の中身（zip の中の1つ）を取り出す。pick：その zip の目次から、どの名前かを選ぶ */
+async function recoverFromZip(b: Blob, pick: (entries: Map<string, Blob>) => Promise<string | null>): Promise<Blob | null> {
+  try {
+    const whole = new Blob([b]); // 実際の中身（＝前のバックアップの zip）
+    const entries = await readZip(whole);
+    const name = await pick(entries);
+    const e = name ? entries.get(name) : undefined;
+    return e && e.size === b.size ? e : null;
+  } catch { return null; }
 }
 
 // ---------------- zip（無圧縮）を作る ----------------
@@ -75,6 +101,8 @@ class ZipWriter {
     this.offset += 30 + nb.length + size;
     this.count++;
   }
+  /** できあがる zip の大きさ（中身＋ヘッダ＋目次）。finish() の Blob の大きさはこれと同じでなければならない */
+  get expectedSize() { let n = this.offset + 22; for (const c of this.cd) n += c.length; return n; }
   finish(): Blob {
     let cdSize = 0; for (const c of this.cd) cdSize += c.length;
     const e = new DataView(new ArrayBuffer(22));
@@ -170,6 +198,71 @@ const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const json = (v: unknown) => enc.encode(JSON.stringify(v));
 const isPdf = (f: { name: string; type: string }) => /pdf/i.test(f.type || '') || /\.pdf$/i.test(f.name);
 
+// ---------------- 前の版の復元で傷んだデータを直す ----------------
+export interface RepairResult { fixedBooks: number; fixedShots: number; brokenBooks: Set<string>; brokenShots: number }
+/** 前の版で復元した本・作りかけのスクショ本の画像のうち、Safari の不具合で中身が「復元に使った zip 全体」になっているものを、
+ *  その zip の中から本当の中身を取り出して入れ直す。直せない本の ID は brokenBooks に入れる */
+export async function repairStored(prog: Progress = () => {}): Promise<RepairResult> {
+  const res: RepairResult = { fixedBooks: 0, fixedShots: 0, brokenBooks: new Set(), brokenShots: 0 };
+  let recents: RecentFile[] = []; try { recents = await listRecent(); } catch { /* 無し */ }
+  for (const r of recents) {
+    if (!r.files.some((f) => inflated(f.blob))) continue;
+    prog(`前に復元した本を直しています：${r.name}`, 0, 1);
+    const files: RecentFile['files'] = [];
+    for (let k = 0; k < r.files.length && files.length === k; k++) {
+      const f = r.files[k];
+      if (!inflated(f.blob)) { files.push(f); continue; }
+      const real = await recoverFromZip(f.blob, async (entries) => {
+        const rj = entries.get('recents.json'); // その本が入っていた zip の目次（本の ID → zip の中の名前）
+        if (rj) {
+          try {
+            const m = (JSON.parse(await rj.text()) as Array<{ id: string; files: Array<{ name: string; path: string }> }>).find((x) => x.id === r.id);
+            const ff = m && (m.files[k]?.name === f.name ? m.files[k] : m.files.find((x) => x.name === f.name));
+            if (ff) return ff.path;
+          } catch { /* 下で */ }
+        }
+        const same = [...entries].filter(([n, b]) => n.startsWith('files/') && b.size === f.blob.size);
+        return same.length === 1 ? same[0][0] : null;
+      });
+      if (real) files.push({ ...f, blob: await solid(real, f.type) });
+    }
+    if (files.length !== r.files.length) { console.warn('[BACKUP] stored book is damaged and cannot be recovered', r.name); res.brokenBooks.add(r.id); continue; }
+    await putRecentRecord({ ...r, files });
+    console.info('[BACKUP] repaired a book damaged by an earlier restore', r.name);
+    res.fixedBooks++;
+  }
+  let shots: ShotItem[] = []; try { shots = await sbList(); } catch { /* 無し */ }
+  const bad = shots.filter((s) => inflated(s.blob) || (s.thumb && inflated(s.thumb)));
+  if (bad.length) {
+    prog(`前に復元したスクショ本の画像を直しています（${bad.length}枚）`, 0, 1);
+    const lists = new Map<number, Map<string, string>>(); // zip の大きさ → (名前・順番 → zip の中の名前)
+    const fixed: ShotItem[] = [];
+    for (const s of bad) {
+      let blob: Blob | null = s.blob;
+      if (inflated(s.blob)) {
+        blob = await recoverFromZip(s.blob, async (entries) => {
+          const n = new Blob([s.blob]).size;
+          if (!lists.has(n)) {
+            const m = new Map<string, string>();
+            try { for (const x of JSON.parse(await entries.get('shotbook.json')!.text()) as Array<{ name: string; seq: number; blobPath: string }>) m.set(`${x.name}\u0000${x.seq}`, x.blobPath); } catch { /* 無し */ }
+            lists.set(n, m);
+          }
+          return lists.get(n)!.get(`${s.name}\u0000${s.seq}`) ?? null;
+        });
+        if (blob) blob = await solid(blob, s.blob.type || 'image/jpeg');
+      }
+      if (!blob) { res.brokenShots++; continue; }
+      const thumb = s.thumb && inflated(s.thumb) ? await makeThumb(blob).catch(() => blob!) : s.thumb;
+      fixed.push({ ...s, blob, thumb });
+      if (fixed.length >= 50) { await sbPutMany(fixed.splice(0)); }
+    }
+    await sbPutMany(fixed);
+    res.fixedShots = bad.length - res.brokenShots;
+    if (res.fixedShots) console.info(`[BACKUP] repaired ${res.fixedShots} screenshot images damaged by an earlier restore`);
+  }
+  return res;
+}
+
 export interface BuildOptions {
   books: boolean;
   /** 入れる本（本棚の ID）。省略時は全部 */
@@ -181,6 +274,8 @@ export interface BuildOptions {
   /** 古い呼び方（スクショ本だけ白黒）。shrink が無い時だけ使う */
   shotGray?: boolean;
   partBytes: number; build: string; onProgress?: Progress;
+  /** 入れられなかった本・画像の知らせ（画面に出す） */
+  onWarn?: (msg: string) => void;
 }
 /** バックアップを作る。partBytes を超えそうなら本の途中で次のファイルに分ける */
 export async function buildBackup(o: BuildOptions): Promise<File[]> {
@@ -189,9 +284,18 @@ export async function buildBackup(o: BuildOptions): Promise<File[]> {
   const stamp = new Date(created);
   const ymd = `${stamp.getFullYear()}${String(stamp.getMonth() + 1).padStart(2, '0')}${String(stamp.getDate()).padStart(2, '0')}-${String(stamp.getHours()).padStart(2, '0')}${String(stamp.getMinutes()).padStart(2, '0')}`;
   const prog = o.onProgress || (() => {});
+  const warn = o.onWarn || (() => {});
   const shrink: ShrinkMode = o.shrink ?? (o.shotGray ? 'gray' : 'none');
-  const recents: RecentFile[] = o.books ? (await listRecent().catch(() => [] as RecentFile[])).filter((r) => !o.bookIds || o.bookIds.has(r.id)) : [];
-  const shots: ShotItem[] = o.books && o.shots !== false ? await sbList().catch(() => []) : [];
+  // 前の版の復元で傷んだ本・画像を先に直す（直したものは本棚に入れ直すので、そのあとで読み直す）
+  const rep = o.books ? await repairStored(prog).catch((e) => { console.warn('[BACKUP] repair failed', e); return null; }) : null;
+  let recents: RecentFile[] = o.books ? (await listRecent().catch(() => [] as RecentFile[])).filter((r) => !o.bookIds || o.bookIds.has(r.id)) : [];
+  let shots: ShotItem[] = o.books && o.shots !== false ? await sbList().catch(() => []) : [];
+  // 直せなかったもの（.size と実際の中身の大きさが違う）は入れない：入れると zip が何倍にもなり、中身も壊れる
+  const badBooks = recents.filter((r) => rep?.brokenBooks.has(r.id) || r.files.some((f) => inflated(f.blob)));
+  if (badBooks.length) { warn(`本棚の保存が傷んでいて読み出せない本は入れませんでした：${badBooks.map((r) => r.name).join('、')}`); recents = recents.filter((r) => !badBooks.includes(r)); }
+  const nShots = shots.length;
+  shots = shots.filter((s) => !inflated(s.blob));
+  if (shots.length < nShots) warn(`作りかけのスクショ本の画像のうち、保存が傷んでいる ${nShots - shots.length}枚は入れませんでした`);
   const totalWork = recents.reduce((a, r) => a + r.size, 0) + shots.reduce((a, s) => a + s.blob.size, 0) + 1;
   let done = 0;
   const zips: Array<{ w: ZipWriter; books: number; bookBytes: number; pages: number; shots: number; localKeys: number; same: Map<string, string> }> = [];
@@ -273,7 +377,13 @@ export async function buildBackup(o: BuildOptions): Promise<File[]> {
     };
     await zz.w.add('manifest.json', json(m));
     const name = zips.length > 1 ? `yomiage-backup-${ymd}-${i + 1}of${zips.length}.zip` : `yomiage-backup-${ymd}.zip`;
-    out.push(new File([zz.w.finish()], name, { type: 'application/zip', lastModified: created }));
+    const file = new File([zz.w.finish()], name, { type: 'application/zip', lastModified: created });
+    // zip の大きさ＝中身＋ヘッダ＋目次 でなければ壊れている（中身の位置がずれて復元できない）。保存させない
+    if (file.size !== zz.w.expectedSize) {
+      console.error('[BACKUP] zip size mismatch', name, file.size, zz.w.expectedSize);
+      throw new Error(`できたファイルの大きさが合いません（${name}：${file.size} / ${zz.w.expectedSize}バイト）。このファイルは壊れているので保存しないでください`);
+    }
+    out.push(file);
   }
   return out;
 }
@@ -352,12 +462,14 @@ export async function restoreBackup(files: File[], mode: 'merge' | 'replace', on
       for (const r of recs) {
         if (haveIds.has(r.id)) { res.skippedBooks++; for (const f of r.files) done += f.size; continue; }
         prog(`本を戻しています：${r.name}`, done, total);
-        const files = r.files.map((f) => {
+        const files: RecentFile['files'] = [];
+        for (const f of r.files) {
           const blob = entries.get(f.path);
           if (!blob || blob.size !== f.size) throw new Error(`バックアップの中の本が壊れています（${r.name}）`);
+          // zip の一部分（slice）のまま入れると、Safari はディスクに zip 全体を書いてしまう → ひとつながりのデータにしてから入れる
+          files.push({ name: f.name, type: f.type, lastModified: f.lastModified, blob: await solid(blob, f.type) });
           done += f.size;
-          return { name: f.name, type: f.type, lastModified: f.lastModified, blob: new Blob([blob], { type: f.type }) };
-        });
+        }
         await putRecentRecord({ id: r.id, name: r.name, size: r.size, opened: r.opened, files });
         haveIds.add(r.id);
         res.books++;
@@ -376,9 +488,9 @@ export async function restoreBackup(files: File[], mode: 'merge' | 'replace', on
         done += blob.size;
         if (haveShots.has(sigKey)) continue;
         const { blobPath: _bp, thumbPath, blobType, sig, ...rest } = s;
-        const img = new Blob([blob], { type: blobType || 'image/jpeg' });
+        const img = await solid(blob, blobType || 'image/jpeg'); // zip の一部分のまま入れない（上の本と同じ）
         const tb = thumbPath && entries.get(thumbPath);
-        const thumb = tb ? new Blob([tb], { type: 'image/jpeg' }) : await makeThumb(img).catch(() => img);
+        const thumb = tb ? await solid(tb, 'image/jpeg') : await makeThumb(img).catch(() => img);
         items.push({ ...rest, blob: img, thumb, sig: unb64(sig) });
         haveShots.add(sigKey);
         res.shots++;
