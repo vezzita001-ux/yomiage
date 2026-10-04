@@ -117,9 +117,11 @@
             <li>「文字の修正」の画面に、その行の元の画像（サーバーOCRの時）と文字が出ます。見比べながら文字を直して<b>「保存」</b>をタップします。</li>
             <li>直した文字は、画面の表示と読み上げの両方に使われます（読み方辞書はそのあとに効きます）。ファイルを開き直しても残ります。</li>
             <li>同じ間違いが本のあちこちにある時は、<b>「この修正を本全体に適用（一括置換）」</b>を開き、<b>「件数を確認（プレビュー）」</b>で何か所変わるかを確かめてから<b>「本全体に適用する」</b>をタップします。</li>
-            <li>元に戻す時は、その行の「文字の修正」を開いて<b>「元に戻す」</b>、一括置換は一覧の<b>「元に戻す」</b>をタップします。</li>
+            <li>同じ間違いがほかの本にもある時は、<b>「適用する範囲」</b>で<b>「すべての本」</b>を選びます。<b>「件数を確認（プレビュー）」</b>で合計と本ごとの件数を確かめてから<b>「すべての本に適用する」</b>をタップすると、本棚のすべての本に効きます（これから入れる本・読み取る本にも効きます）。</li>
+            <li>元に戻す時は、その行の「文字の修正」を開いて<b>「元に戻す」</b>、一括置換は一覧（<b>「この本の一括置換」</b>・<b>「すべての本の一括置換」</b>）の<b>「元に戻す」</b>をタップします。「すべての本の一括置換」の一覧は、設定の<b>「すべての本の一括置換（文字の修正）」</b>からも開けます。</li>
           </ol>
           <p>「◀ 前の行」「次の行 ▶」で、続けて何行でも直せます（直した内容は移動の時に自動で保存されます）。</p>
+          <p>直す順番：行ごとの修正 → この本の一括置換 → すべての本の一括置換 → 読み方辞書（読み上げだけ）。</p>
         </details>
         <div class="field" id="srvField">サーバーURL（音声・OCR用）
           <input id="srvUrl" class="text-in" type="url" inputmode="url" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="空欄＝このアプリと同じサーバー" />
@@ -174,6 +176,7 @@
         </label>
         <button id="btnTest" class="wide-btn primary">▶ 試し聴き</button>
         <button id="btnDict" class="wide-btn">読み方辞書（読み間違いの修正）</button>
+        <button id="btnGfix" class="wide-btn">すべての本の一括置換（文字の修正）</button>
         <label class="field">文字の大きさ <output id="fontOut"></output>
           <input id="font" type="range" min="16" max="40" step="1" />
         </label>
@@ -437,7 +440,7 @@
           <h2 id="bkTitle">💾 バックアップ・復元</h2>
           <button id="btnCloseBk" class="tb-btn" aria-label="バックアップを閉じる">閉じる</button>
         </div>
-        <p class="muted small">本棚の本・読書位置・切り取り設定・読み取り結果・変えた名前・辞書・声や速さの設定を1つのファイル（.zip）にまとめます。URLが変わった時や、iPhone⇔Android で同じ環境にする時は、保存したファイルを「復元」で読み込んでください。</p>
+        <p class="muted small">本棚の本・読書位置・切り取り設定・読み取り結果・文字の修正（一括置換も）・変えた名前・辞書・声や速さの設定を1つのファイル（.zip）にまとめます。URLが変わった時や、iPhone⇔Android で同じ環境にする時は、保存したファイルを「復元」で読み込んでください。</p>
         <h3 class="section-title">保存</h3>
         <div class="field">入れるもの
           <div class="seg" role="radiogroup" aria-label="入れるもの">
@@ -515,13 +518,19 @@
         </div>
         <details id="fixBulk" class="diag">
           <summary>この修正を本全体に適用（一括置換）</summary>
-          <p class="muted small">同じ読み取り間違いを、この本のすべてのページでまとめて直します。まず件数を確認してください。</p>
+          <p id="bDesc" class="muted small">同じ読み取り間違いを、この本のすべてのページでまとめて直します。まず件数を確認してください。</p>
           <label class="field">置き換える文字（間違い）
             <input id="bFrom" type="text" class="text-in" autocomplete="off" placeholder="例：猫" />
           </label>
           <label class="field">置き換え後の文字（正しい文字）
             <input id="bTo" type="text" class="text-in" autocomplete="off" placeholder="例：猪" />
           </label>
+          <div class="field">適用する範囲
+            <div class="seg" role="radiogroup" aria-label="適用する範囲">
+              <button data-bscope="book" role="radio">この本だけ</button>
+              <button data-bscope="all" role="radio">すべての本</button>
+            </div>
+          </div>
           <button id="bPreview" class="wide-btn">件数を確認（プレビュー）</button>
           <div id="bResult" class="bresult" aria-live="polite"></div>
           <button id="bApply" class="wide-btn primary" disabled>本全体に適用する</button>
@@ -529,6 +538,21 @@
         <h3 class="section-title">この本の一括置換 <span id="bCount"></span></h3>
         <ul id="bList" class="dlist"></ul>
         <p id="bEmpty" class="muted small">まだありません。</p>
+        <h3 class="section-title">すべての本の一括置換 <span id="gCount"></span></h3>
+        <ul id="gList" class="dlist"></ul>
+        <p id="gEmpty" class="muted small">まだありません。</p>
+      </div>
+    </div>
+
+    <div id="gfixSheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="gfixTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="gfixTitle">すべての本の一括置換</h2>
+          <button id="btnCloseGfix" class="tb-btn" aria-label="すべての本の一括置換を閉じる">閉じる</button>
+        </div>
+        <p class="muted small">本棚のすべての本（これから入れる本・読み取る本も）に効く、読み取り間違いの置き換えです。画面の表示と読み上げの両方が変わります（この本の一括置換のあと、読み方辞書の前に効きます）。追加は、本文の「✏️ この行の文字を修正」→「この修正を本全体に適用（一括置換）」で「すべての本」を選んでください。</p>
+        <ul id="gList2" class="dlist"></ul>
+        <p id="gEmpty2" class="muted small">まだありません。</p>
       </div>
     </div>
 

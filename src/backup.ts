@@ -1,7 +1,7 @@
 // バックアップ（1つまたは数個の .zip）と復元。
 // ・zip は「無圧縮（store）」を自前で作る/読む。本の Blob はつなぐだけ、CRC は 4MB ずつ読んで計算 → 何百冊・何百枚でもメモリをほとんど使わない
 // ・復元も zip 全体は読まず、File.slice で必要な部分だけ取り出す
-// ・中身：manifest.json（形式・版）、local.json（localStorage の yomiage:*）、recents.json＋files/*.bin（本棚の本）、
+// ・中身：manifest.json（形式・版）、local.json（localStorage の yomiage:*。辞書・文字の修正・すべての本の一括置換 yomiage:fixall も）、recents.json＋files/*.bin（本棚の本）、
 //         pages-*.json（OCR結果）、shotbook.json＋shot/*.bin（作りかけのスクショ本）
 // ・よみあげで作った画像の PDF（動画読み取り・スクショ本）は、ページの JPEG を同じ画素数のまま画質を下げて作り直して入れる（pdfshrink.ts）。
 //   本の ID（読書位置・読み取り結果のキー）は元のまま recents.json に入るので、復元した本は続きから・読み取り済みのページはサーバー無しで読める
@@ -11,6 +11,7 @@ import {
   type RecentFile, type CachedPage, type Position,
 } from './storage';
 import { listItems as sbList, putMany as sbPutMany, clearItems as sbClear, makeThumb, loadMeta as sbLoadMeta, type ShotItem } from './shotbook';
+import { GLOBAL_KEY as FIXALL_KEY, mergeGlobalRules } from './fixes';
 import { shrinkPdf, estimateShrink, reencodeJpeg, SHRINK_Q, type ShrinkMode } from './pdfshrink';
 
 export const BACKUP_FORMAT = 'yomiage-backup';
@@ -328,6 +329,8 @@ export async function restoreBackup(files: File[], mode: 'merge' | 'replace', on
               const add = b.filter((e) => !seen.has(`${e.from}\u0000${e.to}`));
               if (add.length) val = JSON.stringify([...a, ...add]);
             } catch { /* そのまま */ }
+          } else if (k === FIXALL_KEY) { // すべての本の一括置換も足し合わせる（同じ置き換えは1つ）
+            val = mergeGlobalRules(cur, v);
           }
         }
         if (val != null) { try { localStorage.setItem(k, val); res.localKeys++; } catch (e) { console.warn('[BACKUP] localStorage full', k, e); } }

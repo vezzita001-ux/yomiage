@@ -171,7 +171,7 @@ export async function putCachedPage(key: string, v: CachedPage) {
 export async function clearAll() {
   await tx('files', 'readwrite', (s) => s.clear());
   await tx('pages', 'readwrite', (s) => s.clear());
-  Object.keys(localStorage).filter((k) => k.startsWith('yomiage:') && k !== 'yomiage:dict' && k !== 'yomiage:serverUrl' && !k.startsWith('yomiage:fix:')).forEach((k) => localStorage.removeItem(k));
+  Object.keys(localStorage).filter((k) => k.startsWith('yomiage:') && k !== 'yomiage:dict' && k !== 'yomiage:serverUrl' && k !== 'yomiage:fixall' && !k.startsWith('yomiage:fix:')).forEach((k) => localStorage.removeItem(k));
 }
 
 // ---------- バックアップ用 ----------

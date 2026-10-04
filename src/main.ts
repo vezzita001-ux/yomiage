@@ -13,10 +13,10 @@ import { VIDEO_HELP_HTML } from './video-help';
 import { ocrCanvas, prepareCanvas, serverOcr, linesToText, splitSpread, type OcrMode, type OcrLine } from './ocr';
 import { dlog, installLogCapture, environmentReport, logText, BUILD } from './debuglog';
 import { registerSW } from 'virtual:pwa-register';
-import { loadFixes, saveFixes, applyToUnits, diffCore, replaceAllCount, type DocFixes } from './fixes';
+import { loadFixes, saveFixes, applyToUnits, diffCore, replaceAllCount, loadGlobalRules, saveGlobalRules, type DocFixes, type BookRule } from './fixes';
 import {
   loadSettings, saveSettings, loadPosition, savePosition, saveRecent, touchRecent, listRecent,
-  getRecent, deleteRecent, getCachedPage, putCachedPage, clearAll, renameRecent, getRecentRecord, type Settings,
+  getRecent, deleteRecent, getCachedPage, putCachedPage, clearAll, renameRecent, getRecentRecord, pageKeys, type Settings, type RecentFile,
 } from './storage';
 import { loadName, saveName, fileNameFor, bookFor, displayFor, extOf, normVol, sanitize, pdfInfoTitle, type NameRec } from './rename';
 import { epubMetaTitle } from './epub';
@@ -151,6 +151,8 @@ function screenSkip(i: number, lines: OcrLine[], dropped: Array<{ text: string; 
 let pageData: PageData | null = null;
 /** 文字の修正（このファイル分） */
 let fixes: DocFixes = { v: 1, pages: {}, rules: [] };
+/** すべての本の一括置換（本棚のすべての本に、この本の一括置換のあとに当てる） */
+let globalRules: BookRule[] = loadGlobalRules();
 /** 今のページの、修正前のデータ（OCRキャッシュそのまま） */
 let pageRaw: PageData | null = null;
 /** 今のページの単位（サーバーOCRは行、それ以外は段落）：本文中の位置・修正済みか・元の文字 */
@@ -1534,17 +1536,19 @@ async function showPage(i: number, sent = 0): Promise<boolean> {
   return true;
 }
 
-/** ページのデータに「文字の修正」と「一括置換」を当てた、表示・読み上げ用のデータを作る */
-function pageView(i: number, data: PageData) {
-  const page = fixes.pages[String(i)];
+/** ページのデータに「文字の修正」と「一括置換」を当てた、表示・読み上げ用のデータを作る
+ * 順番：行ごとの修正 → この本の一括置換 → すべての本の一括置換（読み方辞書は読み上げの時にこのあと） */
+function pageView(i: number, data: PageData, fx: DocFixes = fixes) {
+  const page = fx.pages[String(i)];
+  const rules = globalRules.length ? [...fx.rules, ...globalRules] : fx.rules;
   if (data.lines && data.lines.length) {
-    const r = applyToUnits(data.lines.map((l) => l.text), page, fixes.rules);
+    const r = applyToUnits(data.lines.map((l) => l.text), page, rules);
     const lines = data.lines.map((l, k) => ({ ...l, text: r.units[k] }));
     const { text, ranges } = linesToText(lines);
     return { view: { ...data, text, lines, ranges } as PageData, ranges, fixed: r.fixed, orig: r.orig, kind: '行' as const };
   }
   const paras = data.text.split('\n');
-  const r = applyToUnits(paras, page, fixes.rules);
+  const r = applyToUnits(paras, page, rules);
   let pos = 0;
   const ranges = r.units.map((u) => { const a = pos; pos += u.length + 1; return [a, a + u.length] as [number, number]; });
   return { view: { ...data, text: r.units.join('\n') } as PageData, ranges, fixed: r.fixed, orig: r.orig, kind: '段落' as const };
@@ -2008,6 +2012,7 @@ function openFix(u: number, hint = '') {
   $<HTMLButtonElement>('fixNext').disabled = u >= unitRanges.length - 1;
   $<HTMLInputElement>('bFrom').value = hint && fixShown.includes(hint) ? hint : '';
   $<HTMLInputElement>('bTo').value = '';
+  if ($('fixSheet').hidden) setBulkScope('book'); // 開くたびに「この本だけ」から
   resetBulkPreview();
   renderRules();
   drawFixImage(u);
@@ -2151,6 +2156,7 @@ $('fixText').addEventListener('input', () => {
 ['bFrom', 'bTo'].forEach((id) => $(id).addEventListener('input', resetBulkPreview));
 
 function resetBulkPreview() {
+  bPrevTok++;
   $('bResult').innerHTML = '';
   $<HTMLButtonElement>('bApply').disabled = true;
 }
@@ -2182,56 +2188,194 @@ async function collectBook(): Promise<{ total: number; pages: Array<{ i: number;
   return { total: d.pageCount, pages };
 }
 
+/** 一括置換の件数を数える（見本は最大 max 件） */
+function countHits(pages: Array<{ i: number; units: string[] }>, from: string, to: string, unitName: string, max = 5, prefix = '') {
+  let n = 0, pagesHit = 0;
+  const per = new Map<number, number>();
+  const samples: string[] = [];
+  for (const pg of pages) {
+    let hit = 0;
+    pg.units.forEach((u) => {
+      const c = replaceAllCount(u, from, to).n;
+      if (!c) return;
+      hit += c;
+      if (samples.length < max) {
+        const at = u.indexOf(from);
+        const pre = u.slice(Math.max(0, at - 8), at), post = u.slice(at + from.length, at + from.length + 8);
+        samples.push(`${prefix}${pg.i + 1}${unitName}：…${esc(pre)}<mark>${esc(from)}</mark>→<mark>${esc(to)}</mark>${esc(post)}…`);
+      }
+    });
+    if (hit) { pagesHit++; per.set(pg.i, hit); }
+    n += hit;
+  }
+  return { n, pagesHit, per, samples };
+}
+
+/** 本棚の表示名（本棚の一覧と同じ） */
+function shelfLabel(r: RecentFile): string {
+  const b = effBook(r.id, r.files[0]?.name || '');
+  const nm = loadName(r.id);
+  return b ? (b.vol ? `${b.title}　${b.vol}巻` : b.title) : (nm ? displayFor(nm) : r.name);
+}
+
+/** 読み取り結果のキャッシュのキーを「本ID#ページ」ごとにまとめる */
+async function groupPageKeys(): Promise<Map<string, string[]>> {
+  const m = new Map<string, string[]>();
+  for (const k of await pageKeys().catch(() => new Set<string>())) {
+    const p = k.lastIndexOf('#');
+    if (p < 0) continue;
+    const head = k.slice(0, p);
+    const arr = m.get(head);
+    if (arr) arr.push(k); else m.set(head, [k]);
+  }
+  return m;
+}
+
+/** 本棚のほかの本の、今表示する形（行の修正・一括置換を当てた）の文字を集める。
+ * 読み取り済みのページ（OCR結果）・文字の入ったページだけ。PDF は今の本とは別のワーカーで開いてすぐ閉じる */
+async function collectShelfBook(r: RecentFile, keys: Map<string, string[]>): Promise<{ total: number; unit: string; pages: Array<{ i: number; units: string[] }> }> {
+  const files = await getRecent(r.id);
+  if (!files) throw new Error('ファイルが見つかりません');
+  const d = r.id.startsWith('shot|') ? openScreenshots(files) : await openFiles(files, { ownWorker: true });
+  d.id = r.id; // バックアップで小さくして戻した PDF も本棚の ID で
+  const fx = loadFixes(r.id);
+  const pages: Array<{ i: number; units: string[] }> = [];
+  try {
+    const trim = loadTrim(trimKey(d));
+    const devKey = (i: number) => `${d.id}#${i}#${settings.ocrMode}-${settings.spread}${isScreen(d, trim) ? `-scr${trimSig(trim)}` : ''}`;
+    for (let i = 0; i < d.pageCount; i++) {
+      let data: PageData | null = null;
+      const raw = await d.getRawPage(i).catch(() => null);
+      if (raw?.ocr) {
+        const o = raw.ocr;
+        data = o.skip ? { text: '' } : { text: linesToText(o.lines).text, lines: o.lines as OcrLine[] };
+      } else if (raw && raw.text !== null) {
+        data = { text: raw.text };
+      } else {
+        const have = keys.get(`${d.id}#${i}`) || [];
+        // 今の設定のキー → サーバーOCR（今の見開き設定）→ どれか
+        const key = [serverKey(d, i), devKey(i)].find((k) => have.includes(k))
+          || have.find((k) => /#(ndl|shot2)-/.test(k) && k.endsWith(`-${settings.spread}`))
+          || have.find((k) => /#(ndl|shot2)-/.test(k)) || have[0];
+        const c = key ? await getCachedPage(key) : undefined;
+        if (c) data = c.lines && c.lines.length ? { text: c.text, lines: c.lines } : { text: c.text };
+      }
+      if (!data) continue;
+      const pv = pageView(i, data, fx);
+      pages.push({ i, units: pv.view.lines ? pv.view.lines.map((l) => l.text) : pv.view.text.split('\n') });
+    }
+  } finally { d.destroy?.(); }
+  return { total: d.pageCount, unit: d.unit === '枚目' ? '枚' : d.unit, pages };
+}
+
+let bPrevTok = 0;
 $('bPreview').onclick = async () => {
   const from = $<HTMLInputElement>('bFrom').value;
   const to = $<HTMLInputElement>('bTo').value;
   const out = $('bResult');
   if (!from) { out.textContent = '「置き換える文字」を入れてください。'; return; }
   if (from === to) { out.textContent = '置き換える前と後が同じです。'; return; }
+  if (!doc) return;
+  const tok = ++bPrevTok;
   out.textContent = '数えています…';
+  if (bScope === 'all') { await previewAll(from, to, tok); return; }
   const book = await collectBook();
-  let n = 0, here = 0, pagesHit = 0;
-  const samples: string[] = [];
-  for (const pg of book.pages) {
-    let hit = 0;
-    pg.units.forEach((u, k) => {
-      const c = replaceAllCount(u, from, to).n;
-      if (!c) return;
-      hit += c;
-      if (samples.length < 5) {
-        const at = u.indexOf(from);
-        const pre = u.slice(Math.max(0, at - 8), at), post = u.slice(at + from.length, at + from.length + 8);
-        samples.push(`${pg.i + 1}${doc!.unit === '枚目' ? '枚目' : 'ページ'}：…${esc(pre)}<mark>${esc(from)}</mark>→<mark>${esc(to)}</mark>${esc(post)}…`);
-      }
-    });
-    if (hit) pagesHit++;
-    if (pg.i === pageIdx) here = hit;
-    n += hit;
-  }
+  if (tok !== bPrevTok) return;
+  const unitName = doc.unit === '枚目' ? '枚目' : 'ページ';
+  const { n, pagesHit, per, samples } = countHits(book.pages, from, to, unitName);
+  const here = per.get(pageIdx) || 0;
   const unread = book.total - book.pages.length;
   out.innerHTML = `<b>${n}か所</b>が変わります（${pagesHit}ページ。このページは${here}か所）。` +
-    `<br>読み取り済み ${book.pages.length} / 全${book.total}${doc!.unit === '枚目' ? '枚' : 'ページ'}で数えました。` +
-    (unread ? `まだ読み取っていない${unread}${doc!.unit === '枚目' ? '枚' : 'ページ'}にも、開いた時に同じように適用されます。` : '') +
+    `<br>読み取り済み ${book.pages.length} / 全${book.total}${doc.unit === '枚目' ? '枚' : 'ページ'}で数えました。` +
+    (unread ? `まだ読み取っていない${unread}${doc.unit === '枚目' ? '枚' : 'ページ'}にも、開いた時に同じように適用されます。` : '') +
     (samples.length ? `<ul>${samples.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
   $<HTMLButtonElement>('bApply').disabled = n === 0 && !unread;
   $<HTMLButtonElement>('bApply').dataset.n = String(n);
 };
+
+/** すべての本：合計と本ごとの件数 */
+async function previewAll(from: string, to: string, tok: number) {
+  const out = $('bResult');
+  const cur = doc!;
+  let list: RecentFile[] = [];
+  try { list = await listRecent(); } catch { /* IndexedDB が使えない */ }
+  // 本棚の順（本棚の一覧と同じく、今の本を先に）
+  list.sort((x, y) => Number(y.id === cur.id) - Number(x.id === cur.id));
+  if (!list.some((r) => r.id === cur.id)) list.unshift({ id: cur.id, name: cur.name, files: [], size: 0, opened: Date.now() });
+  const keys = await groupPageKeys();
+  const rows: Array<{ label: string; n: number; read: number; total: number; unit: string; cur: boolean; err?: boolean }> = [];
+  const samples: string[] = [];
+  for (let k = 0; k < list.length; k++) {
+    const r = list[k];
+    if (tok !== bPrevTok) return;
+    out.textContent = `数えています…（${k + 1} / ${list.length}冊）`;
+    const label = r.id === cur.id ? cur.name : shelfLabel(r);
+    try {
+      const book = r.id === cur.id
+        ? { ...(await collectBook()), unit: cur.unit === '枚目' ? '枚' : cur.unit }
+        : await collectShelfBook(r, keys);
+      const c = countHits(book.pages, from, to, book.unit === '枚' ? '枚目' : book.unit, Math.max(0, 3 - samples.length), `${esc(label)} `);
+      samples.push(...c.samples);
+      rows.push({ label, n: c.n, read: book.pages.length, total: book.total, unit: book.unit, cur: r.id === cur.id });
+    } catch (e) {
+      console.warn('[FIX] count failed', r.id, e);
+      rows.push({ label, n: 0, read: 0, total: 0, unit: '', cur: r.id === cur.id, err: true });
+    }
+  }
+  if (tok !== bPrevTok) return;
+  const total = rows.reduce((a, x) => a + x.n, 0);
+  const hit = rows.filter((x) => x.n > 0 || x.cur);
+  const zero = rows.filter((x) => x.n === 0 && !x.cur && !x.err);
+  const err = rows.filter((x) => x.err && !x.cur);
+  const names = (xs: typeof rows) => esc(xs.slice(0, 4).map((x) => x.label).join('、')) + (xs.length > 4 ? ` ほか${xs.length - 4}冊` : '');
+  out.innerHTML = `<b>合計 ${total}か所</b>が変わります（本棚の${rows.length}冊のうち${rows.filter((x) => x.n > 0).length}冊）。` +
+    `<ul class="bbooks">${hit.map((x) => `<li><span class="bbk">${esc(x.label)}</span>${x.cur ? '（この本）' : ''}：<b>${x.n}か所</b>` +
+      (x.err ? '（数えられませんでした）' : `<span class="bread">（読み取り済み ${x.read} / ${x.total}${x.unit}）</span>`) + '</li>').join('')}</ul>` +
+    (zero.length ? `<p class="bzero">0か所：${names(zero)}</p>` : '') +
+    (err.length ? `<p class="bzero">数えられなかった本：${names(err)}</p>` : '') +
+    '<p class="bzero">まだ読み取っていないページや、これから本棚に入れる本・読み取る本にも、開いた時に同じように適用されます。</p>' +
+    (samples.length ? `<ul>${samples.map((x) => `<li>${x}</li>`).join('')}</ul>` : '');
+  $<HTMLButtonElement>('bApply').disabled = false;
+  $<HTMLButtonElement>('bApply').dataset.n = String(total);
+}
 
 $('bApply').onclick = () => {
   if (!doc) return;
   const from = $<HTMLInputElement>('bFrom').value;
   const to = $<HTMLInputElement>('bTo').value;
   if (!from || from === to) return;
+  if (bScope === 'all' && globalRules.some((r) => r.from === from && r.to === to)) { toast('同じ置き換えが「すべての本の一括置換」にすでにあります'); return; }
   // 入力中の行の修正を先に保存
   const typed = $<HTMLTextAreaElement>('fixText').value.replace(/\r?\n/g, '');
   if (typed !== fixShown) saveFixUnit(false);
-  fixes.rules.push({ id: Math.random().toString(36).slice(2, 10), from, to, at: Date.now() });
-  saveFixes(doc.id, fixes);
+  const rule: BookRule = { id: Math.random().toString(36).slice(2, 10), from, to, at: Date.now() };
+  if (bScope === 'all') {
+    globalRules = [...globalRules, rule];
+    try { saveGlobalRules(globalRules); } catch (e) { globalRules = loadGlobalRules(); showError('保存できませんでした（空き容量が足りない可能性）', e); return; }
+    console.info(`[FIX] global rule ${JSON.stringify(from)} → ${JSON.stringify(to)}`);
+  } else {
+    fixes.rules.push(rule);
+    saveFixes(doc.id, fixes);
+  }
   refreshAfterFix();
-  toast(`本全体に適用しました（${$('bApply').dataset.n || 0}か所）`);
+  toast(`${bScope === 'all' ? 'すべての本' : '本全体'}に適用しました（${$('bApply').dataset.n || 0}か所）`);
   ($('fixBulk') as HTMLDetailsElement).open = false;
   openFix(fixUnit);
 };
+
+function ruleItem(r: BookRule, aria: string, onUndo: () => void): HTMLLIElement {
+  const li = document.createElement('li');
+  const w = document.createElement('span');
+  w.className = 'dw';
+  w.style.flex = '1';
+  w.textContent = `「${r.from}」→「${r.to}」`;
+  const del = document.createElement('button');
+  del.textContent = '元に戻す';
+  del.setAttribute('aria-label', `${aria}「${r.from}」→「${r.to}」を元に戻す`);
+  del.onclick = onUndo;
+  li.append(w, del);
+  return li;
+}
 
 function renderRules() {
   const ul = $('bList');
@@ -2239,26 +2383,57 @@ function renderRules() {
   $('bCount').textContent = fixes.rules.length ? `（${fixes.rules.length}件）` : '';
   $('bEmpty').hidden = fixes.rules.length > 0;
   fixes.rules.forEach((r) => {
-    const li = document.createElement('li');
-    const w = document.createElement('span');
-    w.className = 'dw';
-    w.style.flex = '1';
-    w.textContent = `「${r.from}」→「${r.to}」`;
-    const del = document.createElement('button');
-    del.textContent = '元に戻す';
-    del.setAttribute('aria-label', `一括置換「${r.from}」→「${r.to}」を元に戻す`);
-    del.onclick = () => {
+    ul.append(ruleItem(r, '一括置換', () => {
       if (!doc) return;
       fixes.rules = fixes.rules.filter((x) => x.id !== r.id);
       saveFixes(doc.id, fixes);
       refreshAfterFix();
       toast(`一括置換「${r.from}」→「${r.to}」を元に戻しました`);
       openFix(Math.min(fixUnit, unitRanges.length - 1));
-    };
-    li.append(w, del);
-    ul.append(li);
+    }));
   });
+  renderGlobalRules();
 }
+
+/** すべての本の一括置換の一覧（文字の修正の画面と、設定から開く画面の両方） */
+function renderGlobalRules() {
+  const n = globalRules.length;
+  $('btnGfix').textContent = `すべての本の一括置換（文字の修正${n ? `・${n}件` : ''}）`;
+  $('gCount').textContent = n ? `（${n}件）` : '';
+  for (const [ulId, emptyId] of [['gList', 'gEmpty'], ['gList2', 'gEmpty2']]) {
+    const ul = $(ulId);
+    ul.innerHTML = '';
+    $(emptyId).hidden = n > 0;
+    globalRules.forEach((r) => {
+      ul.append(ruleItem(r, 'すべての本の一括置換', () => {
+        globalRules = globalRules.filter((x) => x.id !== r.id);
+        saveGlobalRules(globalRules);
+        console.info(`[FIX] global rule removed ${JSON.stringify(r.from)} → ${JSON.stringify(r.to)}`);
+        if (doc && pageRaw) refreshAfterFix();
+        toast(`すべての本の一括置換「${r.from}」→「${r.to}」を元に戻しました`);
+        if (!$('fixSheet').hidden && doc && pageRaw) openFix(Math.min(fixUnit, unitRanges.length - 1));
+        else renderGlobalRules();
+      }));
+    });
+  }
+}
+renderGlobalRules();
+$('btnGfix').onclick = () => { renderGlobalRules(); $('settings').hidden = true; $('gfixSheet').hidden = false; };
+$('btnCloseGfix').onclick = () => { $('gfixSheet').hidden = true; };
+
+// 一括置換の範囲（この本だけ／すべての本）
+let bScope: 'book' | 'all' = 'book';
+function setBulkScope(v: 'book' | 'all') {
+  bScope = v;
+  document.querySelectorAll<HTMLButtonElement>('[data-bscope]').forEach((b) => { const on = b.dataset.bscope === v; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); });
+  $('bDesc').textContent = v === 'all'
+    ? '同じ読み取り間違いを、本棚のすべての本でまとめて直します（これから入れる本・読み取る本にも効きます）。まず件数を確認してください。'
+    : '同じ読み取り間違いを、この本のすべてのページでまとめて直します。まず件数を確認してください。';
+  $('bApply').textContent = v === 'all' ? 'すべての本に適用する' : '本全体に適用する';
+  resetBulkPreview();
+}
+document.querySelectorAll<HTMLButtonElement>('[data-bscope]').forEach((b) => { b.onclick = () => setBulkScope(b.dataset.bscope as 'book' | 'all'); });
+setBulkScope('book');
 
 function esc(t: string) { return t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!)); }
 

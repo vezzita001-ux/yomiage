@@ -72,7 +72,8 @@ export function docIdFor(files: File[], kind: DocKind): string {
   return `${kind}|${names}`;
 }
 
-export async function openFiles(files: File[]): Promise<LoadedDoc> {
+/** ownWorker：今開いている本とは別の pdf.js ワーカーで開く（すべての本の一括置換の件数を数える時など。閉じても今の本に影響しない） */
+export async function openFiles(files: File[], opt: { ownWorker?: boolean } = {}): Promise<LoadedDoc> {
   const kinds = files.map(detectKind);
   const images = files.filter((_, i) => kinds[i] === 'image');
   // 画像は名前の番号順（iPhone の写真・ファイルから選ぶと、読み込みが終わった順に並ぶことがあるため）。名前が全部同じなら選んだ順
@@ -84,7 +85,7 @@ export async function openFiles(files: File[]): Promise<LoadedDoc> {
   if (idx < 0) throw new Error('対応していない種類のファイルです（PDF・画像・txt・ePubに対応）');
   const f = files[idx];
   const kind = kinds[idx]!;
-  if (kind === 'pdf') return openPdf(f);
+  if (kind === 'pdf') return openPdf(f, !!opt.ownWorker);
   if (kind === 'epub') return openEpub(f);
   return openTxt(f);
 }
@@ -92,8 +93,14 @@ export async function openFiles(files: File[]): Promise<LoadedDoc> {
 // ---------------- PDF ----------------
 // 前のPDFの後片付け（ワーカーの終了）が終わる前に次のPDFを開くと「worker is being destroyed」になるので待つ
 let pdfDestroying: Promise<unknown> = Promise.resolve();
-async function openPdf(f: File): Promise<LoadedDoc> {
-  await pdfDestroying;
+async function openPdf(f: File, ownWorker = false): Promise<LoadedDoc> {
+  if (!ownWorker) await pdfDestroying;
+  // 別のワーカー（共有のワーカーを壊さない）
+  let ownPort: Worker | null = null, own: pdfjs.PDFWorker | null = null;
+  if (ownWorker) {
+    try { ownPort = new PdfWorker(); own = new pdfjs.PDFWorker({ port: ownPort as unknown as null }); } catch { ownPort = null; own = new pdfjs.PDFWorker(); }
+  }
+  const freeOwn = () => { try { own?.destroy(); } catch { /* 無視 */ } ownPort?.terminate(); };
   const t0 = performance.now();
   const data = new Uint8Array(await f.arrayBuffer());
   console.info(`[PDF] ${f.name} ${(data.length / 1048576).toFixed(1)}MB read in ${Math.round(performance.now() - t0)}ms`);
@@ -101,6 +108,7 @@ async function openPdf(f: File): Promise<LoadedDoc> {
   const isWebKit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Android/.test(navigator.userAgent);
   const task = pdfjs.getDocument({
     data,
+    ...(own ? { worker: own } : {}),
     ...(isWebKit ? { isOffscreenCanvasSupported: false, isImageDecoderSupported: false } : {}),
     cMapUrl: `${BASE}pdfjs/cmaps/`,
     cMapPacked: true,
@@ -108,7 +116,8 @@ async function openPdf(f: File): Promise<LoadedDoc> {
     wasmUrl: `${BASE}pdfjs/wasm/`,
     iccUrl: `${BASE}pdfjs/iccs/`,
   });
-  const pdf = await task.promise;
+  let pdf: pdfjs.PDFDocumentProxy;
+  try { pdf = await task.promise; } catch (e) { if (own) { await task.destroy().catch(() => undefined); freeOwn(); } throw e; }
   console.info(`[PDF] opened: ${pdf.numPages} pages in ${Math.round(performance.now() - t0)}ms (webkit=${isWebKit})`);
   // スマホのスクリーンショットをまとめたPDFか（ファイル名が「NN.GrPDF.書籍名.pdf」、または1ページ目が縦長・横長のスマホ画面の比率で文字情報が無い）
   const book = parseBookName(f.name);
@@ -201,7 +210,10 @@ async function openPdf(f: File): Promise<LoadedDoc> {
       const meaningful = text.replace(/[\s\p{P}\p{S}]/gu, '').length;
       return { text: meaningful >= 5 ? text : null, image: () => renderPage(i) };
     },
-    destroy() { pdfDestroying = task.destroy().catch(() => undefined); },
+    destroy() {
+      if (own) { void task.destroy().catch(() => undefined).then(freeOwn); return; }
+      pdfDestroying = task.destroy().catch(() => undefined);
+    },
   };
 }
 

@@ -2,7 +2,8 @@
 // ファイルごとに localStorage に保存する（キー：yomiage:fix:<ファイルID>）。
 // ・行ごとの修正：ページ番号と行番号（サーバーOCRは行、それ以外は段落）ごとに、元の文字と直した文字を持つ
 // ・一括置換：本全体に適用する「文字 → 文字」の置き換え
-// 表示と読み上げの両方に使われ、読み方辞書はこのあとに適用される。
+// ・すべての本の一括置換：本棚のすべての本（あとから開いた本・読み取った本も）に効く置き換え（キー：yomiage:fixall）
+// 表示と読み上げの両方に使われる。順番：行ごとの修正 → この本の一括置換 → すべての本の一括置換 → 読み方辞書。
 
 export interface LineFix { orig: string; text: string; at: number }
 export interface BookRule { id: string; from: string; to: string; at: number }
@@ -26,6 +27,31 @@ export function saveFixes(docId: string, f: DocFixes) {
 }
 
 export function isFixKey(k: string) { return k.startsWith(PREFIX); }
+
+// ---------- すべての本の一括置換 ----------
+export const GLOBAL_KEY = 'yomiage:fixall';
+export interface GlobalFixes { v: 1; rules: BookRule[] }
+const okRule = (r: unknown): r is BookRule => !!r && typeof (r as BookRule).from === 'string' && (r as BookRule).from.length > 0 && typeof (r as BookRule).to === 'string';
+/** 保存されている形（JSON文字列）から読む。壊れていれば空 */
+export function parseGlobalRules(json: string | null): BookRule[] {
+  try {
+    const j = JSON.parse(json || 'null');
+    const arr = Array.isArray(j) ? j : j && Array.isArray(j.rules) ? j.rules : [];
+    return arr.filter(okRule).map((r: BookRule) => ({ id: String(r.id || Math.random().toString(36).slice(2, 10)), from: r.from, to: r.to, at: Number(r.at) || 0 }));
+  } catch { return []; }
+}
+export function loadGlobalRules(): BookRule[] { return parseGlobalRules(localStorage.getItem(GLOBAL_KEY)); }
+export function saveGlobalRules(rules: BookRule[]) {
+  if (!rules.length) localStorage.removeItem(GLOBAL_KEY);
+  else localStorage.setItem(GLOBAL_KEY, JSON.stringify({ v: 1, rules } as GlobalFixes));
+}
+/** バックアップの復元（足す）：今のルールのあとに、まだ無い置き換えだけを足す。足すものが無ければ null */
+export function mergeGlobalRules(curJson: string, addJson: string): string | null {
+  const a = parseGlobalRules(curJson), b = parseGlobalRules(addJson);
+  const seen = new Set(a.map((r) => `${r.from}\u0000${r.to}`));
+  const add = b.filter((r) => !seen.has(`${r.from}\u0000${r.to}`));
+  return add.length ? JSON.stringify({ v: 1, rules: [...a, ...add] } as GlobalFixes) : null;
+}
 
 /** すべて置換（literal）。件数も返す */
 export function replaceAllCount(s: string, from: string, to: string): { out: string; n: number } {

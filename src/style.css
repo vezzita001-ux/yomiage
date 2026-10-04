@@ -198,6 +198,10 @@ input[type='range'] { height: 40px; }
 .bresult { margin-top: 8px; font-size: 15px; }
 .bresult ul { padding-left: 1.2em; margin: 6px 0; }
 .bresult mark { background: #ffe082; color: #000; }
+.bresult .bbooks { list-style: none; padding: 0; margin: 6px 0; }
+.bresult .bbooks li { padding: 5px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.bresult .bread { color: var(--muted); font-size: 13px; }
+.bresult .bzero { margin: 6px 0; font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
 .text .s.fixed { text-decoration: underline dotted #2e7d32; text-decoration-thickness: 2px; text-underline-offset: 4px; }
 .howto h4 { margin: 14px 0 4px; font-size: 16px; }
 .howto ol { padding-left: 1.4em; margin: 4px 0; }
