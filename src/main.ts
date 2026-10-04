@@ -21,7 +21,7 @@ import {
 import { loadName, saveName, fileNameFor, bookFor, displayFor, extOf, normVol, sanitize, pdfInfoTitle, type NameRec } from './rename';
 import { epubMetaTitle } from './epub';
 import { makePdf, type PdfPage } from './pdfwrite';
-import { estimate as bkEstimate, buildBackup, restoreBackup, inspectBackup, LAST_KEY as BK_LAST } from './backup';
+import { estimate as bkEstimate, buildBackup, restoreBackup, inspectBackup, repairStored, hasDamagedBooks, LAST_KEY as BK_LAST } from './backup';
 import { api, serverBase, getServerUrl, setServerUrl, normalizeServerUrl, checkServer, usingRemoteServer, autoUpdateServerUrl } from './server';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -210,58 +210,147 @@ function showView(which: 'home' | 'reader') {
 }
 
 // ---------------- 最近のファイル ----------------
+// 本棚に入れられなかった本（端末の保存できる量がいっぱい等）。黙って入れないままにせず、ホームで知らせて入れ直せるようにする
+const shelfUnsaved = new Map<string, { name: string; files: File[]; why: string; damaged: boolean }>();
+function saveErrText(e: unknown): string {
+  const n = (e as DOMException)?.name || '';
+  return n === 'QuotaExceededError' ? '端末の、このアプリが保存できる量がいっぱいです' : '端末に保存できませんでした。空き容量が足りない可能性があります';
+}
+/** 本棚に入れる。入れられない時は、前の版の復元で傷んだ本（復元に使った zip 全体を抱えて場所を取っている）を直して空きを作り、もう一度。
+ *  それでもだめなら知らせる（読み上げはそのまま使える）。本棚のほかの本は消さない */
+async function shelfSave(id: string, name: string, files: File[], quiet = false): Promise<boolean> {
+  try { await saveRecent(id, name, files); }
+  catch (e1) {
+    console.warn('[RECENT] could not save → free space (repair damaged books) and retry', e1);
+    let fixed = 0;
+    try { if (await hasDamagedBooks()) fixed = (await repairStored(() => {}, { booksOnly: true })).fixedBooks; } catch (e) { console.warn('[RECENT] repair failed', e); }
+    if (fixed) console.info(`[RECENT] repaired ${fixed} damaged book(s) to free space`);
+    try {
+      await saveRecent(id, name, files);
+      if (fixed) toast(`前に復元した本の保存を直して空きを作り、「${name}」を本棚に入れました`, 6000);
+    } catch (e2) {
+      console.error('[RECENT] could not save file to the shelf', id, `${Math.round(files.reduce((a, f) => a + f.size, 0) / 1024)}KB`, e2);
+      const why = saveErrText(e2);
+      shelfUnsaved.set(id, { name, files, why, damaged: await hasDamagedBooks() });
+      if (!quiet) toast(`「${name}」を本棚に入れられませんでした（空き容量が足りない可能性）。読み上げはこのまま使えます`, 7000);
+      if (!$('home').hidden) renderRecent();
+      return false;
+    }
+  }
+  shelfUnsaved.delete(id);
+  return true;
+}
+function renderShelfWarn() {
+  const box = $('shelfWarn');
+  box.hidden = shelfUnsaved.size === 0;
+  if (!shelfUnsaved.size) return;
+  const items = [...shelfUnsaved.values()];
+  const last = items[items.length - 1];
+  $('shelfWarnText').textContent = `⚠ ${items.map((x) => `「${x.name}」`).join('')}は本棚に入っていません（${last.why}）。読み上げはできます。iPhone の写真やほかのアプリを消すなどして少し空きを作ってから「本棚に入れ直す」を押してください。`
+    + (last.damaged ? '前に復元した本が、復元に使ったバックアップ全体の分の場所を取っています。少し空きができれば、入れ直す時にそれも直して、空きが大きく増えます（本は消しません）。' : '');
+}
+$('shelfWarnRetry').onclick = async () => {
+  const btn = $('shelfWarnRetry') as HTMLButtonElement;
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    let ok = 0, ng = 0;
+    // 先に、前の版の復元で傷んだ本を直して空きを作る
+    try { if (await hasDamagedBooks()) await repairStored(() => {}, { booksOnly: true }); } catch (e) { console.warn('[RECENT] repair failed', e); }
+    for (const [id, x] of [...shelfUnsaved]) { if (await shelfSave(id, x.name, x.files, true)) ok++; else ng++; }
+    toast(ng ? `まだ本棚に入れられません（${[...shelfUnsaved.values()][0]?.why || ''}）` : `本棚に入れました（${ok}冊）`, 5000);
+  } finally { btn.disabled = false; renderRecent(); }
+};
+$('shelfWarnClose').onclick = () => { shelfUnsaved.clear(); renderShelfWarn(); };
+
+/** 本棚の表示名（書籍名・巻／名前を変えた名前／ファイル名） */
+function recentLabel(r: RecentFile, b: BookName | null): string {
+  if (b) return b.vol ? `${b.title}　${b.vol}巻` : b.title;
+  const nm = loadName(r.id);
+  return nm ? displayFor(nm) : String(r.name || r.files?.[0]?.name || '無題');
+}
+let recentTok = 0;
 async function renderRecent() {
+  const tok = ++recentTok;
   const ul = $('recentList');
+  let list: RecentFile[] = [];
+  try { list = await listRecent(); } catch (e) { console.warn('[RECENT] list failed', e); /* IndexedDB が使えない */ }
+  if (tok !== recentTok) return; // あとから呼ばれた方で描く（同時に描いて重ならないように）
   ul.innerHTML = '';
-  let list: Awaited<ReturnType<typeof listRecent>> = [];
-  try { list = await listRecent(); } catch { /* IndexedDB が使えない */ }
+  renderShelfWarn();
   $('recentEmpty').hidden = list.length > 0;
   bkRemindCheck(list.length);
   // 「巻No.GrPDF.書籍名.pdf」は本棚として書籍名→巻の順に、それ以外は開いた順
+  // 1冊の記録が傷んでいても（復元した古いデータなど）、ほかの本は必ず出す
   const coll = new Intl.Collator('ja', { numeric: true });
-  const withBook = list.map((r) => ({ r, b: effBook(r.id, r.files[0]?.name || '') }));
-  const shelf = withBook.filter((x) => x.b).sort((x, y) => coll.compare(x.b!.title, y.b!.title) || x.b!.volNum - y.b!.volNum || coll.compare(x.b!.vol, y.b!.vol) || coll.compare(x.r.name, y.r.name));
+  const bookOf = (r: RecentFile) => { try { return effBook(r.id, String(r.files[0]?.name || '')); } catch (e) { console.warn('[SHELF] name of a book', r.id, e); return null; } };
+  const withBook = list.map((r) => ({ r, b: bookOf(r) }));
+  const cmp = (x: { r: RecentFile; b: BookName | null }, y: { r: RecentFile; b: BookName | null }) => {
+    try { return coll.compare(String(x.b!.title), String(y.b!.title)) || (x.b!.volNum - y.b!.volNum) || coll.compare(String(x.b!.vol), String(y.b!.vol)) || coll.compare(String(x.r.name), String(y.r.name)); } catch { return 0; }
+  };
+  const shelf = withBook.filter((x) => x.b).sort(cmp);
   const others = withBook.filter((x) => !x.b);
   const head = (t: string) => { const li = document.createElement('li'); li.className = 'shelf-head'; li.textContent = t; ul.append(li); };
   if (shelf.length) head(`📚 本棚（書籍名・巻の順）${shelf.length}冊`);
   shelf.concat(others).forEach(({ r, b }, idx) => {
     if (shelf.length && others.length && idx === shelf.length) head('そのほかのファイル（開いた順）');
-    const pos = loadPosition(r.id);
-    const li = document.createElement('li');
-    const open = document.createElement('button');
-    open.className = 'recent-open';
-    const prog = pos ? `${pos.page + 1} / ${pos.pageCount}` : '未読';
-    open.innerHTML = `<span class="rn"></span><span class="rp"></span>`;
-    const label = b ? (b.vol ? `${b.title}　${b.vol}巻` : b.title) : (loadName(r.id) ? displayFor(loadName(r.id)!) : r.name);
-    (open.querySelector('.rn') as HTMLElement).textContent = label;
-    (open.querySelector('.rp') as HTMLElement).textContent = `続きから（${prog}）`;
-    open.setAttribute('aria-label', `${label} を続きから開く。${prog}`);
-    open.onclick = async () => {
-      const files = await getRecent(r.id);
-      if (files) loadFiles(files, false, { screen: r.id.startsWith('shot|'), id: r.id });
-    };
-    const del = document.createElement('button');
-    del.className = 'recent-del';
-    del.textContent = '削除';
-    del.setAttribute('aria-label', `${label} を一覧から削除`);
-    del.onclick = async () => {
-      if (!confirm(`「${label}」を一覧から削除しますか？（読書位置も消えます）`)) return;
-      await deleteRecent(r.id);
-      saveName(r.id, null); localStorage.removeItem(MTITLE + r.id);
-      renderRecent();
-    };
-    const ren = document.createElement('button');
-    ren.className = 'recent-ren';
-    ren.innerHTML = '✏️<span>名前を変更</span>';
-    ren.setAttribute('aria-label', `${label} の名前を変更`);
-    ren.title = '名前を変更';
-    ren.onclick = () => openRename({ id: r.id, fileName: r.files[0]?.name || r.name, files: r.files.length, getFile: async () => (await getRecent(r.id))?.[0] ?? null });
-    li.append(open, ren, del);
+    let li: HTMLLIElement;
+    try { li = recentItem(r, b); } catch (e) {
+      console.warn('[SHELF] item render failed → simple item', r.id, e);
+      try { li = recentItem(r, null, true); } catch { li = document.createElement('li'); li.textContent = String(r.id); }
+    }
     ul.append(li);
   });
 }
+function recentItem(r: RecentFile, b: BookName | null, plain = false): HTMLLIElement {
+  let pos: ReturnType<typeof loadPosition> = null;
+  try { pos = loadPosition(r.id); } catch { pos = null; }
+  const label = plain ? String(r.name || r.id) : recentLabel(r, b);
+  const li = document.createElement('li');
+  const open = document.createElement('button');
+  open.className = 'recent-open';
+  const prog = pos && Number.isFinite(pos.page) && Number.isFinite(pos.pageCount) ? `${pos.page + 1} / ${pos.pageCount}` : '未読';
+  open.innerHTML = `<span class="rn"></span><span class="rp"></span>`;
+  (open.querySelector('.rn') as HTMLElement).textContent = label;
+  (open.querySelector('.rp') as HTMLElement).textContent = `続きから（${prog}）`;
+  open.setAttribute('aria-label', `${label} を続きから開く。${prog}`);
+  open.onclick = async () => {
+    const files = await getRecent(r.id);
+    if (files?.length) loadFiles(files, false, { screen: r.id.startsWith('shot|'), id: r.id });
+    else toast('この本のファイルが本棚の保存から読み出せません。もう一度ファイルを開いてください', 6000);
+  };
+  const del = document.createElement('button');
+  del.className = 'recent-del';
+  del.textContent = '削除';
+  del.setAttribute('aria-label', `${label} を一覧から削除`);
+  del.onclick = async () => {
+    if (!confirm(`「${label}」を一覧から削除しますか？（読書位置も消えます）`)) return;
+    await deleteRecent(r.id);
+    saveName(r.id, null); localStorage.removeItem(MTITLE + r.id);
+    renderRecent();
+  };
+  const ren = document.createElement('button');
+  ren.className = 'recent-ren';
+  ren.innerHTML = '✏️<span>名前を変更</span>';
+  ren.setAttribute('aria-label', `${label} の名前を変更`);
+  ren.title = '名前を変更';
+  ren.onclick = () => openRename({ id: r.id, fileName: r.files[0]?.name || r.name, files: r.files.length, getFile: async () => (await getRecent(r.id))?.[0] ?? null });
+  li.append(open, ren, del);
+  return li;
+}
 
-
+/** 前の版の復元で傷んだ本（Safari：復元に使った zip 全体を1冊ごとに抱えて、端末の場所を何倍も取る）を、起動して少ししたら直す。
+ *  直すと場所が空いて、新しい本を本棚に入れられるようになる（本の中身・読書位置・ID はそのまま。直せない本もそのまま残す） */
+setTimeout(async () => {
+  try {
+    if (!(await hasDamagedBooks())) return;
+    const r = await repairStored(() => {}, { booksOnly: true });
+    if (r.fixedBooks) {
+      toast(`前に復元した本の保存を直しました（${r.fixedBooks}冊）。端末の空きが増えました`, 6000);
+      if (!$('home').hidden) renderRecent();
+    }
+  } catch (e) { console.warn('[RECENT] auto repair failed', e); }
+}, 4000);
 
 
 // ---------------- 読み取った文字入りのPDFを保存 ----------------
@@ -781,7 +870,7 @@ async function loadFiles(files: File[], isNew = true, opt: { screen?: boolean; h
   $('btnOcrPdf').hidden = !(doc.kind === 'image' || doc.kind === 'pdf');
   updateOcrButtons();
   try {
-    if (isNew) { await saveRecent(doc.id, doc.name, files); bkPersistQuiet(); } else await touchRecent(doc.id);
+    if (isNew) { if (await shelfSave(doc.id, doc.name, files)) bkPersistQuiet(); } else await touchRecent(doc.id);
   } catch (e) { console.warn('[RECENT] could not save file (private browsing?)', e); /* 保存できなくても読むことはできる */ }
   const pos = loadPosition(doc.id);
   let page = 0;
@@ -1189,7 +1278,7 @@ $('sbRead').onclick = async () => {
     for (let k = 0; k < parts.length; k++) {
       if (k === openIdx) continue;
       const b = parseBookName(parts[k].name);
-      try { await saveRecent(docIdFor([parts[k]], 'pdf'), b ? bookLabel(b) : parts[k].name, [parts[k]]); } catch (e) { console.warn('[SHOTBOOK] save part failed', e); }
+      await shelfSave(docIdFor([parts[k]], 'pdf'), b ? bookLabel(b) : parts[k].name, [parts[k]]);
     }
     console.info(`[SHOTBOOK] built ${parts.length} part(s): ${parts.map((f) => `${f.name} ${Math.round(f.size / 1024)}KB`).join(', ')}`);
     $('sbSheet').hidden = true;
@@ -2312,9 +2401,7 @@ function countHits(pages: Array<{ i: number; units: string[] }>, from: string, t
 
 /** 本棚の表示名（本棚の一覧と同じ） */
 function shelfLabel(r: RecentFile): string {
-  const b = effBook(r.id, r.files[0]?.name || '');
-  const nm = loadName(r.id);
-  return b ? (b.vol ? `${b.title}　${b.vol}巻` : b.title) : (nm ? displayFor(nm) : r.name);
+  try { return recentLabel(r, effBook(r.id, String(r.files[0]?.name || ''))); } catch { return String(r.name || r.id); }
 }
 
 /** 読み取り結果のキャッシュのキーを「本ID#ページ」ごとにまとめる */

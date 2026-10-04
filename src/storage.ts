@@ -93,13 +93,29 @@ function db(): Promise<IDBDatabase> {
   }
   return dbp;
 }
-function tx<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+/** 1回の読み書き。書き込みは「トランザクションの完了（ディスクに書けた）」まで待つ
+ *  （要求の成功だけで済ませると、空き容量が足りずに最後に取り消された時も成功に見えて、本棚に入らないのに何も出ない）。
+ *  iPhone で長く裏に回したあとなどに IndexedDB とのつながりが切れていたら、開き直して1回だけやり直す */
+function txOnce<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   return db().then((d) => new Promise<T>((res, rej) => {
     const t = d.transaction(store, mode);
     const req = fn(t.objectStore(store));
-    req.onsuccess = () => res(req.result);
-    req.onerror = () => rej(req.error);
+    t.oncomplete = () => res(req.result);
+    t.onabort = () => rej(t.error || req.error || new DOMException('保存できませんでした（空き容量が足りない可能性）', 'AbortError'));
   }));
+}
+const lostConnection = (e: unknown) => {
+  const n = (e as DOMException)?.name || '', m = String((e as Error)?.message || '');
+  return n === 'InvalidStateError' || /connection|closing|lost/i.test(m);
+};
+async function tx<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  try { return await txOnce(store, mode, fn); } catch (e) {
+    if (!lostConnection(e)) throw e;
+    console.warn('[IDB] connection lost → reopen', e);
+    try { (await dbp)?.close(); } catch { /* 無視 */ }
+    dbp = null;
+    return txOnce(store, mode, fn);
+  }
 }
 
 export interface RecentFile {
@@ -110,27 +126,15 @@ export interface RecentFile {
   opened: number;
 }
 
-const MAX_RECENT = 40; // 本棚（巻No.GrPDF.書籍名.pdf）として何冊も置けるように
-const MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
-const MAX_STORE_BYTES = 150 * 1024 * 1024;
-
+/** 本棚に入れる。入れられなかった時（空き容量が足りないなど）は例外にする（黙って入れないことはしない）。
+ *  前は 40冊・合計1GB を超えると古い本を自動で消していたが、本棚の本は消さない（消すのは「削除」を押した時だけ） */
 export async function saveRecent(id: string, name: string, files: File[]) {
   const size = files.reduce((a, f) => a + f.size, 0);
-  if (size > MAX_STORE_BYTES) return;
   const rec: RecentFile = {
     id, name, size, opened: Date.now(),
     files: files.map((f) => ({ name: f.name, type: f.type, lastModified: f.lastModified, blob: f })),
   };
   await tx('files', 'readwrite', (s) => s.put(rec));
-  const all = await listRecent();
-  for (const old of all.slice(MAX_RECENT)) await deleteRecent(old.id);
-  // 合計が大きすぎる時は、長く開いていないものから一覧から外す
-  let total = all.slice(0, MAX_RECENT).reduce((a, r) => a + (r.size || 0), 0);
-  for (const old of all.slice(0, MAX_RECENT).reverse()) {
-    if (total <= MAX_TOTAL_BYTES || old.id === id) break;
-    total -= old.size || 0;
-    await deleteRecent(old.id);
-  }
 }
 export async function touchRecent(id: string) {
   const r = await tx<RecentFile | undefined>('files', 'readonly', (s) => s.get(id));
@@ -144,14 +148,23 @@ export async function renameRecent(id: string, name: string) {
 export async function getRecentRecord(id: string): Promise<RecentFile | undefined> {
   return tx<RecentFile | undefined>('files', 'readonly', (s) => s.get(id));
 }
+/** 開いた日時（傷んだ記録でも並べられるように数にする） */
+const openedOf = (r: RecentFile) => (Number.isFinite(Number(r?.opened)) ? Number(r.opened) : 0);
 export async function listRecent(): Promise<RecentFile[]> {
-  const all = await tx<RecentFile[]>('files', 'readonly', (s) => s.getAll());
-  return all.sort((a, b) => b.opened - a.opened);
+  let all: RecentFile[];
+  try { all = await tx<RecentFile[]>('files', 'readonly', (s) => s.getAll()); } catch (e) {
+    // まとめて読めない時は1冊ずつ（読めない1冊のために本棚全体が出なくならないように）
+    console.warn('[RECENT] getAll failed → one by one', e);
+    const keys = await tx<IDBValidKey[]>('files', 'readonly', (s) => s.getAllKeys());
+    all = [];
+    for (const k of keys) { try { const r = await tx<RecentFile | undefined>('files', 'readonly', (s) => s.get(k)); if (r) all.push(r); } catch (e2) { console.warn('[RECENT] unreadable record', String(k), e2); } }
+  }
+  return all.filter((r) => r && typeof r === 'object' && r.id != null).map((r) => (Array.isArray(r.files) ? r : { ...r, files: [] })).sort((a, b) => openedOf(b) - openedOf(a));
 }
 export async function getRecent(id: string): Promise<File[] | null> {
   const r = await tx<RecentFile | undefined>('files', 'readonly', (s) => s.get(id));
   if (!r) return null;
-  return r.files.map((f) => new File([f.blob], f.name, { type: f.type, lastModified: f.lastModified }));
+  return (Array.isArray(r.files) ? r.files : []).filter((f) => f && f.blob).map((f) => new File([f.blob], f.name || '無題', { type: f.type || '', lastModified: f.lastModified || 0 }));
 }
 export async function deleteRecent(id: string) {
   await tx('files', 'readwrite', (s) => s.delete(id));

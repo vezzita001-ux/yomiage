@@ -56,6 +56,10 @@ async function solid(b: Blob, type: string): Promise<Blob> {
 }
 /** 実際に読める大きさ（つないだ時の大きさ）が .size と違う＝前の版の復元で中身が zip 全体になっている */
 const inflated = (b: Blob) => new Blob([b]).size !== b.size;
+/** 前の版の復元で傷んだ本があるか（すぐ分かる。中身は読まない） */
+export async function hasDamagedBooks(): Promise<boolean> {
+  try { return (await listRecent()).some((r) => r.files.some((f) => f?.blob && inflated(f.blob))); } catch { return false; }
+}
 /** 中身が zip 全体になってしまった Blob から、本当の中身（zip の中の1つ）を取り出す。pick：その zip の目次から、どの名前かを選ぶ */
 async function recoverFromZip(b: Blob, pick: (entries: Map<string, Blob>) => Promise<string | null>): Promise<Blob | null> {
   try {
@@ -202,64 +206,77 @@ const isPdf = (f: { name: string; type: string }) => /pdf/i.test(f.type || '') |
 export interface RepairResult { fixedBooks: number; fixedShots: number; brokenBooks: Set<string>; brokenShots: number }
 /** 前の版で復元した本・作りかけのスクショ本の画像のうち、Safari の不具合で中身が「復元に使った zip 全体」になっているものを、
  *  その zip の中から本当の中身を取り出して入れ直す。直せない本の ID は brokenBooks に入れる */
-export async function repairStored(prog: Progress = () => {}): Promise<RepairResult> {
+let repairing: Promise<RepairResult> | null = null;
+/** booksOnly：本棚の本だけ直す（起動時の自動の修理。作りかけのスクショ本はバックアップの前に直す） */
+export async function repairStored(prog: Progress = () => {}, opt: { booksOnly?: boolean } = {}): Promise<RepairResult> {
+  // 同時に2回動かさない（起動時の自動の修理とバックアップの前の修理が重なった時など）
+  while (repairing) await repairing.catch(() => undefined);
+  repairing = repairStoredNow(prog, !!opt.booksOnly).finally(() => { repairing = null; });
+  return repairing;
+}
+async function repairStoredNow(prog: Progress, booksOnly: boolean): Promise<RepairResult> {
   const res: RepairResult = { fixedBooks: 0, fixedShots: 0, brokenBooks: new Set(), brokenShots: 0 };
   let recents: RecentFile[] = []; try { recents = await listRecent(); } catch { /* 無し */ }
-  for (const r of recents) {
-    if (!r.files.some((f) => inflated(f.blob))) continue;
-    prog(`前に復元した本を直しています：${r.name}`, 0, 1);
-    const files: RecentFile['files'] = [];
-    for (let k = 0; k < r.files.length && files.length === k; k++) {
-      const f = r.files[k];
-      if (!inflated(f.blob)) { files.push(f); continue; }
-      const real = await recoverFromZip(f.blob, async (entries) => {
-        const rj = entries.get('recents.json'); // その本が入っていた zip の目次（本の ID → zip の中の名前）
-        if (rj) {
-          try {
-            const m = (JSON.parse(await rj.text()) as Array<{ id: string; files: Array<{ name: string; path: string }> }>).find((x) => x.id === r.id);
-            const ff = m && (m.files[k]?.name === f.name ? m.files[k] : m.files.find((x) => x.name === f.name));
-            if (ff) return ff.path;
-          } catch { /* 下で */ }
-        }
-        const same = [...entries].filter(([n, b]) => n.startsWith('files/') && b.size === f.blob.size);
-        return same.length === 1 ? same[0][0] : null;
-      });
-      if (real) files.push({ ...f, blob: await solid(real, f.type) });
-    }
-    if (files.length !== r.files.length) { console.warn('[BACKUP] stored book is damaged and cannot be recovered', r.name); res.brokenBooks.add(r.id); continue; }
-    await putRecentRecord({ ...r, files });
-    console.info('[BACKUP] repaired a book damaged by an earlier restore', r.name);
-    res.fixedBooks++;
-  }
-  let shots: ShotItem[] = []; try { shots = await sbList(); } catch { /* 無し */ }
-  const bad = shots.filter((s) => inflated(s.blob) || (s.thumb && inflated(s.thumb)));
-  if (bad.length) {
-    prog(`前に復元したスクショ本の画像を直しています（${bad.length}枚）`, 0, 1);
-    const lists = new Map<number, Map<string, string>>(); // zip の大きさ → (名前・順番 → zip の中の名前)
-    const fixed: ShotItem[] = [];
-    for (const s of bad) {
-      let blob: Blob | null = s.blob;
-      if (inflated(s.blob)) {
-        blob = await recoverFromZip(s.blob, async (entries) => {
-          const n = new Blob([s.blob]).size;
-          if (!lists.has(n)) {
-            const m = new Map<string, string>();
-            try { for (const x of JSON.parse(await entries.get('shotbook.json')!.text()) as Array<{ name: string; seq: number; blobPath: string }>) m.set(`${x.name}\u0000${x.seq}`, x.blobPath); } catch { /* 無し */ }
-            lists.set(n, m);
+  // 傷んだ本は1冊ごとに、小さい本から直す（1冊直せなくても次へ。直すたびに、その本が抱えていた zip 全体の分の空きができる）
+  for (const r of [...recents].sort((a, b) => (a.size || 0) - (b.size || 0))) {
+    if (!r.files.some((f) => f?.blob && inflated(f.blob))) continue;
+    try {
+      prog(`前に復元した本を直しています：${r.name}`, 0, 1);
+      const files: RecentFile['files'] = [];
+      for (let k = 0; k < r.files.length && files.length === k; k++) {
+        const f = r.files[k];
+        if (!inflated(f.blob)) { files.push(f); continue; }
+        const real = await recoverFromZip(f.blob, async (entries) => {
+          const rj = entries.get('recents.json'); // その本が入っていた zip の目次（本の ID → zip の中の名前）
+          if (rj) {
+            try {
+              const m = (JSON.parse(await rj.text()) as Array<{ id: string; files: Array<{ name: string; path: string }> }>).find((x) => x.id === r.id);
+              const ff = m && (m.files[k]?.name === f.name ? m.files[k] : m.files.find((x) => x.name === f.name));
+              if (ff) return ff.path;
+            } catch { /* 下で */ }
           }
-          return lists.get(n)!.get(`${s.name}\u0000${s.seq}`) ?? null;
+          const same = [...entries].filter(([n, b]) => n.startsWith('files/') && b.size === f.blob.size);
+          return same.length === 1 ? same[0][0] : null;
         });
-        if (blob) blob = await solid(blob, s.blob.type || 'image/jpeg');
+        if (real) files.push({ ...f, blob: await solid(real, f.type) });
       }
-      if (!blob) { res.brokenShots++; continue; }
-      const thumb = s.thumb && inflated(s.thumb) ? await makeThumb(blob).catch(() => blob!) : s.thumb;
-      fixed.push({ ...s, blob, thumb });
-      if (fixed.length >= 50) { await sbPutMany(fixed.splice(0)); }
-    }
-    await sbPutMany(fixed);
-    res.fixedShots = bad.length - res.brokenShots;
-    if (res.fixedShots) console.info(`[BACKUP] repaired ${res.fixedShots} screenshot images damaged by an earlier restore`);
+      if (files.length !== r.files.length) { console.warn('[BACKUP] stored book is damaged and cannot be recovered', r.name); res.brokenBooks.add(r.id); continue; }
+      await putRecentRecord({ ...r, files });
+      console.info('[BACKUP] repaired a book damaged by an earlier restore', r.name);
+      res.fixedBooks++;
+    } catch (e) { console.warn('[BACKUP] repair of a book failed (kept as it is)', r.name, e); }
   }
+  let shots: ShotItem[] = []; if (!booksOnly) try { shots = await sbList(); } catch { /* 無し */ }
+  try {
+    const bad = shots.filter((s) => inflated(s.blob) || (s.thumb && inflated(s.thumb)));
+    if (bad.length) {
+      prog(`前に復元したスクショ本の画像を直しています（${bad.length}枚）`, 0, 1);
+      const lists = new Map<number, Map<string, string>>(); // zip の大きさ → (名前・順番 → zip の中の名前)
+      const fixed: ShotItem[] = [];
+      for (const s of bad) {
+        let blob: Blob | null = s.blob;
+        if (inflated(s.blob)) {
+          blob = await recoverFromZip(s.blob, async (entries) => {
+            const n = new Blob([s.blob]).size;
+            if (!lists.has(n)) {
+              const m = new Map<string, string>();
+              try { for (const x of JSON.parse(await entries.get('shotbook.json')!.text()) as Array<{ name: string; seq: number; blobPath: string }>) m.set(`${x.name}\u0000${x.seq}`, x.blobPath); } catch { /* 無し */ }
+              lists.set(n, m);
+            }
+            return lists.get(n)!.get(`${s.name}\u0000${s.seq}`) ?? null;
+          });
+          if (blob) blob = await solid(blob, s.blob.type || 'image/jpeg');
+        }
+        if (!blob) { res.brokenShots++; continue; }
+        const thumb = s.thumb && inflated(s.thumb) ? await makeThumb(blob).catch(() => blob!) : s.thumb;
+        fixed.push({ ...s, blob, thumb });
+        if (fixed.length >= 50) { await sbPutMany(fixed.splice(0)); }
+      }
+      await sbPutMany(fixed);
+      res.fixedShots = bad.length - res.brokenShots;
+      if (res.fixedShots) console.info(`[BACKUP] repaired ${res.fixedShots} screenshot images damaged by an earlier restore`);
+    }
+  } catch (e) { console.warn('[BACKUP] repair of screenshot images failed', e); }
   return res;
 }
 
