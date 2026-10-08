@@ -57,7 +57,7 @@ export default defineConfig({
         globIgnores: ['tesseract/**', 'pdfjs/**', 'novel/**'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         navigateFallback: `${BASE}index.html`,
-        navigateFallbackDenylist: ['voicevox', 'aivis', 'ocr', 'shot', 'video', 'novel'].map((p) => new RegExp(`^${BASE}${p}/`)),
+        navigateFallbackDenylist: ['voicevox', 'aivis', 'ocr', 'shot', 'video', 'novel', 'janitor'].map((p) => new RegExp(`^${BASE}${p}/`)),
         skipWaiting: true,
         clientsClaim: true,
         cleanupOutdatedCaches: true,
