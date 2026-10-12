@@ -276,3 +276,10 @@ input[type='range'] { height: 40px; }
 .illustnote[hidden] { display: none; }
 .illustnote:not([hidden]) ~ .toast { bottom: calc(env(safe-area-inset-bottom) + 172px); } /* 知らせとお知らせ（toast）が重ならないように */
 .pageimg.illust ~ .spacer { height: calc(280px + env(safe-area-inset-bottom)); } /* 文字の少ないページでも、絵を上に寄せられるだけスクロールできるように */
+
+/* 📚 よみあげに送る：貼り付け画面 */
+.ci-gap { margin-top: 12px; }
+.ci-info { font-size: 17px; margin: 12px 0 0; word-break: break-all; }
+.ci-text { display: block; width: 100%; box-sizing: border-box; height: 120px; margin-top: 8px; font-size: 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); padding: 8px; }
+#chatImpUse { width: 100%; min-height: 48px; font-size: 18px; }
+.ci-msg { color: #d32f2f; min-height: 1.4em; }

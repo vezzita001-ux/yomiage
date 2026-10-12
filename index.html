@@ -39,6 +39,8 @@
         画像は複数枚まとめて選べます（選んだ順に読みます）。<br />
         文字の入ったPDF・テキスト・ePubは、この端末の中だけで処理します。<br />
         スキャンした本などの画像の文字読み取り（OCR）は、設定が「高精度（サーバー）」のとき、ページの画像をこのアプリの配信元サーバーへ送って読み取ります（保存はしません）。</p>
+      <button id="btnPasteChat" class="big-open shot-open">📋 送った文を本棚に入れる（Grok・チャット）</button>
+      <p class="hint small">読み上げブックマークレットの「📚 よみあげに送る」でコピーした文を、ここから本にします。</p>
       <p class="muted small build" id="homeBuild"></p>
       <div class="recent-headrow"><h2 class="section-title">最近のファイル</h2><button id="btnBackupHome" class="small-btn" aria-label="バックアップと復元">💾 バックアップ</button></div>
       <div id="bkRemind" class="bk-remind" hidden>
@@ -99,6 +101,24 @@
       </div>
     </footer>
 
+    <div id="chatImp" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="chatImpTitle">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <h2 id="chatImpTitle">📚 送られた文を本にする</h2>
+          <button id="chatImpClose" class="tb-btn" aria-label="閉じる">閉じる</button>
+        </div>
+        <div id="chatImpReady" hidden>
+          <p id="chatImpInfo" class="ci-info"></p>
+          <button id="chatImpGo" class="big-open">📚 本棚に入れて読む</button>
+        </div>
+        <button id="chatImpPaste" class="big-open ci-gap">📋 貼り付けて本棚に入れる</button>
+        <p class="hint small">ボタンを押して「ペースト」を選んでください。うまくいかない時は、下の枠を長押しして「ペースト」→「この文で本棚に入れる」。</p>
+        <textarea id="chatImpText" class="ci-text" placeholder="ここを長押しして「ペースト」"></textarea>
+        <button id="chatImpUse" class="small-btn primary ci-gap">この文で本棚に入れる</button>
+        <p id="chatImpMsg" class="small ci-msg" role="status"></p>
+        <p id="chatImpPwa" class="hint small" hidden>※ ホーム画面の「よみあげ」を使っている場合：このSafariの画面で入れた本は、ホーム画面のアプリの本棚には入りません。ホーム画面の「よみあげ」を開いて「📋 送った文を本棚に入れる」→「📋 貼り付けて本棚に入れる」を押してください（文はもうコピーしてあります）。</p>
+      </div>
+    </div>
     <div id="settings" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <div class="sheet-inner">
         <div class="sheet-head">

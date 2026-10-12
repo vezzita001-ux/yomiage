@@ -1,3 +1,4 @@
+import { CHAT_MARK, parsePayload, pagesOf, chatIdFor } from './chatimport';
 // ファイル（PDF・画像・ePub・テキスト）を「ページの集まり」として扱う
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
@@ -343,6 +344,14 @@ function paginate(text: string, size = 2000): string[] {
 
 async function openTxt(f: File): Promise<LoadedDoc> {
   const { text } = decodeText(await f.arrayBuffer());
+  // 「よみあげに送る」で作った本：送り元ごとに同じ ID（送り直しても読書位置が残る）・見出しで章に分ける
+  if (text.startsWith(CHAT_MARK)) {
+    const p = parsePayload(text);
+    if (p) {
+      const { pages: cp, unit } = pagesOf(p.body);
+      return { id: chatIdFor(p.key), name: p.title, kind: 'txt', pageCount: cp.length, unit, hasImages: false, async getRawPage(i) { return { text: cp[i] }; } };
+    }
+  }
   const pages = paginate(text);
   return {
     id: docIdFor([f], 'txt'),

@@ -20,6 +20,7 @@ import {
 } from './storage';
 import { loadName, saveName, fileNameFor, bookFor, displayFor, extOf, normVol, sanitize, pdfInfoTitle, type NameRec } from './rename';
 import { epubMetaTitle } from './epub';
+import { parsePayload, decodeHash, fileText, mergeBodies, chatIdFor, type ChatPayload } from './chatimport';
 import { makePdf, type PdfPage } from './pdfwrite';
 import { estimate as bkEstimate, buildBackup, restoreBackup, inspectBackup, repairStored, hasDamagedBooks, LAST_KEY as BK_LAST } from './backup';
 import { api, serverBase, getServerUrl, setServerUrl, normalizeServerUrl, checkServer, usingRemoteServer, autoUpdateServerUrl } from './server';
@@ -3114,6 +3115,68 @@ $('dImportFile').addEventListener('change', async (e) => {
   }
 });
 (window as unknown as Record<string, unknown>).__dict = { applyDict, get dict() { return dict; } };
+
+
+// ---------------- 📚 よみあげに送る（ブックマークレットから送られた文を本にする） ----------------
+let ciPending: ChatPayload | null = null;
+function ciOpen(p: ChatPayload | null, why = '') {
+  ciPending = p;
+  $('chatImpReady').hidden = !p;
+  $('chatImpInfo').textContent = p ? `「${p.title}」（${p.body.length.toLocaleString()}文字）` : '';
+  ($('chatImpText') as HTMLTextAreaElement).value = '';
+  $('chatImpMsg').textContent = why;
+  $('chatImpPwa').hidden = matchMedia('(display-mode: standalone)').matches || (navigator as unknown as { standalone?: boolean }).standalone === true;
+  $('chatImp').hidden = false;
+}
+async function importChat(p: ChatPayload) {
+  unlockAll();
+  const id = chatIdFor(p.key);
+  let body = p.body, title = p.title, msg = `「${p.title}」を本棚に入れました`;
+  try {
+    const old = await getRecent(id);
+    const op = old?.[0] ? parsePayload(await old[0].text()) : null;
+    if (op) {
+      const m = mergeBodies(op.body, p.body);
+      body = m.body; title = op.title;
+      msg = m.added || m.updated ? `「${title}」を更新しました（新しい章 ${m.added}・続きが増えた章 ${m.updated}）。読んでいた所はそのままです` : `「${title}」に新しい続きはありませんでした`;
+    }
+  } catch (e) { console.warn('[CHAT] old book', e); }
+  $('chatImp').hidden = true;
+  ciPending = null;
+  const f = new File([fileText({ key: p.key, title, body })], (sanitize(title) || 'チャット') + '.txt', { type: 'text/plain', lastModified: Date.now() });
+  await loadFiles([f], true);
+  toast(msg, 6000);
+}
+function ciUse(raw: string, from: string) {
+  const p = parsePayload(raw);
+  if (!p) { $('chatImpMsg').textContent = from + 'に文がありませんでした。ブックマークレットで「📚 よみあげに送る」を押してから、もう一度試してください'; return; }
+  importChat(p);
+}
+$('btnPasteChat').onclick = () => ciOpen(null);
+$('chatImpClose').onclick = () => { $('chatImp').hidden = true; ciPending = null; };
+$('chatImpGo').onclick = () => { if (ciPending) importChat(ciPending); };
+$('chatImpUse').onclick = () => ciUse(($('chatImpText') as HTMLTextAreaElement).value, '枠');
+$('chatImpPaste').onclick = async () => {
+  try {
+    if (!navigator.clipboard?.readText) throw new Error('no clipboard');
+    ciUse(await navigator.clipboard.readText(), 'クリップボード');
+  } catch (e) {
+    console.warn('[CHAT] clipboard', e);
+    $('chatImpMsg').textContent = 'クリップボードを読めませんでした。下の枠を長押しして「ペースト」してから「この文で本棚に入れる」を押してください';
+    ($('chatImpText') as HTMLTextAreaElement).focus();
+  }
+};
+function ciFromHash() {
+  const h = location.hash;
+  if (!/^#(import-clipboard|yomi=)/.test(h)) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (h.startsWith('#yomi=')) {
+    const p = decodeHash(h.slice(6));
+    ciOpen(p, p ? '' : '送られた文を読めませんでした。「📋 貼り付けて本棚に入れる」を押してください');
+  } else ciOpen(null);
+}
+window.addEventListener('hashchange', ciFromHash);
+ciFromHash();
 
 $('buildInfo').textContent = `build ${BUILD}`;
 $('homeBuild').textContent = `build ${BUILD}`;
