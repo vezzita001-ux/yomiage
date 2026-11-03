@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex"><meta name="theme-color" content="#14110f">
+<title>翻訳読み上げ v1</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#14110f;color:#ece4d8;font:16px/1.6 -apple-system,"Hiragino Sans",sans-serif;padding:12px max(12px,env(safe-area-inset-right)) 40px max(12px,env(safe-area-inset-left))}
+h1{font-size:18px;margin:4px 0 10px}h1 small{color:#9a8f80;font-weight:400;font-size:12px}
+textarea{width:100%;min-height:130px;background:#1f1a16;color:inherit;border:1px solid #4a3f33;border-radius:10px;padding:10px;font:inherit}
+#out{background:#1f1a16;border:1px solid #6b4f2a;border-radius:10px;padding:10px;min-height:80px;white-space:pre-wrap;font-size:18px}
+#out .on{background:#5a3d12;border-radius:4px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+button,select{font:inherit;background:#2b241d;color:inherit;border:1px solid #4a3f33;border-radius:10px;padding:10px 14px;min-height:44px}
+button.main{background:#b8741a;border-color:#b8741a;color:#fff;font-weight:700;flex:1}
+button.stop{background:#6b2a2a}
+select{max-width:100%}input[type=range]{flex:1;min-width:120px;height:32px}
+#st{color:#c9b99f;font-size:13px;min-height:20px}
+details{margin-top:14px;color:#c9b99f}summary{min-height:36px}
+code,#bm{font-size:12px;word-break:break-all;background:#1f1a16;padding:6px;border-radius:6px;display:block;color:#e8c98a}
+a{color:#e8a850}
+</style></head><body>
+<h1>🌐 翻訳読み上げ <small>v1 外国語 → 日本語 → 声で読む</small></h1>
+<textarea id="src" placeholder="ここに英語・フランス語・中国語・韓国語などの文章を貼り付け（またはブックマークレットで送る）" autocapitalize="off"></textarea>
+<div class="row">
+ <select id="lang" aria-label="元の言語"><option value="auto">言語：自動判定</option><option value="en">英語</option><option value="fr">フランス語</option><option value="zh-CN">中国語（簡体）</option><option value="zh-TW">中国語（繁体）</option><option value="ko">韓国語</option><option value="es">スペイン語</option><option value="de">ドイツ語</option><option value="it">イタリア語</option><option value="pt">ポルトガル語</option><option value="ru">ロシア語</option><option value="th">タイ語</option><option value="vi">ベトナム語</option><option value="id">インドネシア語</option></select>
+ <button id="paste">📋 貼り付け</button><button id="clear">消す</button>
+</div>
+<div class="row"><button class="main" id="go">▶ 翻訳して読む</button><button id="tr">翻訳だけ</button><button class="stop" id="stop">■ 止める</button></div>
+<div class="row"><select id="eng" aria-label="声"><option value="dev">声：端末の声</option><option value="cloud">声：☁ VOICEVOX</option></select><select id="spk" style="display:none"></select></div>
+<div class="row"><span>速さ</span><input type="range" id="rate" min="0.7" max="1.6" step="0.05" value="1"><span id="rv">1.0</span></div>
+<div id="st"></div>
+<div id="out" aria-live="polite">（ここに日本語訳が出ます）</div>
+<div class="row"><button id="cp">訳をコピー</button><button id="rd">もう一度読む</button></div>
+<details><summary>🔖 ブックマークレット（他のページで選んだ文章をここへ送る）</summary>
+<p style="font-size:13px">選択した文章（無ければ YouTube 等の字幕）を、このページに送ります。下のコードをコピー → ブックマークを追加 → その URL 欄を貼り替え。</p>
+<code id="bm"></code><div class="row"><button id="cpbm">コードをコピー</button></div></details>
+<details><summary>ひとこと</summary><p style="font-size:13px">翻訳は無料の機械翻訳（Google 翻訳の公開口→だめなら MyMemory）をこの端末から直接呼びます。文章は外部の翻訳サービスに送られます。長文は文ごとに区切って順に読みます。MyMemory は1日の無料枠（約5000字）があります。☁は<a href="../">小説読み上げ</a>と同じサーバーの声です。</p></details>
+<script>
+(()=>{
+const $=id=>document.getElementById(id),SRV='https://162-43-75-107.sslip.io';
+const LS=k=>localStorage.getItem('tr.'+k),SS=(k,v)=>localStorage.setItem('tr.'+k,v);
+const st=t=>$('st').textContent=t||'';
+let token=0,au=new Audio(),sents=[],spans=[];
+// ブックマークレット
+const BM="javascript:(function(){var s=String(getSelection()||'').trim();if(!s){s=[].slice.call(document.querySelectorAll('.ytp-caption-segment,.captions-text,.caption-visual-line,[class*=subtitle] span')).map(function(e){return e.innerText}).join(' ').trim()}if(!s){s=(prompt('翻訳して読む文章を貼り付け')||'').trim()}if(!s)return;var u='"+location.origin+location.pathname+"#t='+encodeURIComponent(s.slice(0,4000));if(!window.open(u,'_blank'))location.href=u})();";
+$('bm').textContent=BM;
+$('cpbm').onclick=async()=>{try{await navigator.clipboard.writeText(BM);st('ブックマークレットのコードをコピーしました')}catch(e){const r=document.createRange();r.selectNodeContents($('bm'));getSelection().removeAllRanges();getSelection().addRange(r);st('選択しました。コピーしてください')}};
+// 設定
+$('eng').value=LS('eng')||'dev';$('rate').value=LS('rate')||1;$('rv').textContent=(+$('rate').value).toFixed(2).replace(/0$/,'');$('lang').value=LS('lang')||'auto';
+$('rate').oninput=()=>{SS('rate',$('rate').value);$('rv').textContent=(+$('rate').value).toFixed(2).replace(/0$/,'')};
+$('lang').onchange=()=>SS('lang',$('lang').value);
+let spkList=[{engine:'voicevox',speaker:14,name:'☁ 冥鳴ひまり'},{engine:'voicevox',speaker:2,name:'☁ 四国めたん'}];
+function fillSpk(){const c=LS('spk');$('spk').innerHTML=spkList.map((s,i)=>`<option value="${i}">${s.name.replace(/^☁\s*/,'')}</option>`).join('');$('spk').value=(c&&spkList[c])?c:0}
+function syncEng(){$('spk').style.display=$('eng').value==='cloud'?'':'none'}
+$('eng').onchange=()=>{SS('eng',$('eng').value);syncEng()};$('spk').onchange=()=>SS('spk',$('spk').value);
+fillSpk();syncEng();
+fetch(SRV+'/novel/speakers').then(r=>r.json()).then(l=>{if(Array.isArray(l)&&l.length){spkList=l;fillSpk()}}).catch(()=>{});
+// 翻訳
+function split(t){const out=[];t=t.replace(/\r/g,'').trim();(t.match(/[^。！？!?.\n]+(?:[.!?。！？]+["'”’」』)）]*|\n|$)\s*/g)||[t]).forEach(s=>{s=s.trim();if(!s)return;while(s.length>400){out.push(s.slice(0,400));s=s.slice(400)}out.push(s)});return out}
+async function tget(url,ms=9000){const c=new AbortController(),t=setTimeout(()=>c.abort(),ms);try{const r=await fetch(url,{signal:c.signal});if(!r.ok)throw new Error(r.status);return await r.json()}finally{clearTimeout(t)}}
+let gOK=true;
+async function trOne(s,l){
+ if(gOK){try{const d=await tget('https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl='+l+'&tl=ja&q='+encodeURIComponent(s));return{t:d[0].map(x=>x[0]).join(''),src:d[2]||l,by:'Google'}}catch(e){gOK=false}}
+ const lp=(l==='auto'?'Autodetect':l)+'|ja';const d=await tget('https://api.mymemory.translated.net/get?q='+encodeURIComponent(s)+'&langpair='+encodeURIComponent(lp));
+ if(d.responseStatus&&d.responseStatus!==200)throw new Error(d.responseDetails||'翻訳できませんでした');
+ return{t:d.responseData.translatedText,src:d.responseData.detectedLanguage||l,by:'MyMemory'}}
+async function translate(my){
+ const text=$('src').value.trim();if(!text){st('文章を入れてください');return null}
+ const parts=split(text),res=[];let by='',lang='';gOK=true;
+ for(let i=0;i<parts.length;i++){if(my!==token)return null;st(`翻訳中… ${i+1}/${parts.length}`);
+  try{const r=await trOne(parts[i],$('lang').value);res.push(r.t);by=r.by;lang=r.src}catch(e){st('翻訳に失敗：'+(e.message||e)+'（時間をおいて再試行）');return null}}
+ sents=res;$('out').innerHTML='';spans=res.map(t=>{const s=document.createElement('span');s.textContent=t+' ';$('out').appendChild(s);return s});
+ st(`翻訳しました（${by}・元の言語：${lang}）`);return res}
+// 読み上げ
+function speakDev(t,rate){return new Promise(res=>{const u=new SpeechSynthesisUtterance(t);u.lang='ja-JP';u.rate=rate;const v=speechSynthesis.getVoices().find(v=>/^ja/i.test(v.lang));if(v)u.voice=v;u.onend=u.onerror=res;speechSynthesis.speak(u)})}
+async function cloudBlob(t,my){const s=spkList[$('spk').value]||spkList[0];const q=new URLSearchParams({engine:s.engine||'voicevox',speaker:s.speaker,text:t,speed:$('rate').value,pitch:0,fmt:'mp3'});
+ for(let k=0;k<2;k++){try{const c=new AbortController(),to=setTimeout(()=>c.abort(),40000);const r=await fetch(SRV+'/novel/tts?'+q,{signal:c.signal});clearTimeout(to);if(r.ok)return URL.createObjectURL(await r.blob())}catch(e){}if(my!==token)return null}return null}
+async function readAll(my){
+ if(!sents.length)return;const cloud=$('eng').value==='cloud';let next=cloud?cloudBlob(sents[0],my):null;
+ for(let i=0;i<sents.length;i++){if(my!==token)return;spans.forEach((s,j)=>s.className=j===i?'on':'');spans[i].scrollIntoView({block:'nearest'});
+  if(cloud){st(`☁ 読み上げ中 ${i+1}/${sents.length}`);const url=await next;if(my!==token)return;next=i+1<sents.length?cloudBlob(sents[i+1],my):null;
+   if(!url){st('☁ につながらないので端末の声で読みます');await speakDev(sents[i],+$('rate').value);continue}
+   await new Promise(res=>{au.onended=au.onerror=res;au.src=url;au.play().catch(res)})}
+  else{st(`読み上げ中 ${i+1}/${sents.length}`);await speakDev(sents[i],+$('rate').value)}}
+ if(my===token){spans.forEach(s=>s.className='');st('読み終わりました')}}
+function stop(){token++;try{speechSynthesis.cancel()}catch(e){}au.pause();spans.forEach(s=>s.className='')}
+$('stop').onclick=()=>{stop();st('止めました')};
+$('tr').onclick=async()=>{stop();const my=token;await translate(my)};
+$('go').onclick=async()=>{ // iOSは操作の中で音を出し始める必要がある
+ stop();const my=token;try{au.src='data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';au.play().catch(()=>{})}catch(e){}
+ try{const u=new SpeechSynthesisUtterance(' ');u.volume=0;speechSynthesis.speak(u)}catch(e){}
+ if(await translate(my))await readAll(my)};
+$('rd').onclick=async()=>{if(!sents.length)return;stop();const my=token;await readAll(my)};
+$('cp').onclick=async()=>{const t=sents.join(' ');if(!t)return;try{await navigator.clipboard.writeText(t);st('コピーしました')}catch(e){st('コピーできませんでした')}};
+$('clear').onclick=()=>{stop();$('src').value='';$('out').textContent='（ここに日本語訳が出ます）';sents=[];st('')};
+$('paste').onclick=async()=>{try{$('src').value=await navigator.clipboard.readText();st('貼り付けました。「翻訳して読む」を押してください')}catch(e){st('貼り付けは文章欄を長押しでお願いします')}};
+// 受け取り：#t=…
+function fromHash(){const m=/[#&]t=([^&]*)/.exec(location.hash);if(!m)return;try{$('src').value=decodeURIComponent(m[1])}catch(e){return}
+ const l=/[#&]l=([^&]*)/.exec(location.hash);if(l)$('lang').value=decodeURIComponent(l[1]);
+ history.replaceState(null,'',location.pathname);st('文章を受け取りました。「▶ 翻訳して読む」を押してください');translate(++token).then(r=>{if(r)st('翻訳しました。「もう一度読む」か「▶」で読み上げ')})}
+fromHash();addEventListener('hashchange',fromHash);
+})();
+</script></body></html>
