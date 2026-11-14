@@ -148,6 +148,7 @@ input[type='range'] { height: 40px; }
 .check { display: flex; align-items: center; gap: 10px; min-height: 48px; font-size: 17px; }
 .check input { width: 26px; height: 26px; }
 .wide-btn { display: block; width: 100%; min-height: 52px; margin-top: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); font-size: 18px; }
+a.wide-btn.link-btn { box-sizing: border-box; display: flex; align-items: center; justify-content: center; color: inherit; text-decoration: none; padding: 0 12px; }
 .wide-btn.danger { color: #c62828; margin-top: 24px; }
 .toast {
   position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom) + 130px); z-index: 30;
