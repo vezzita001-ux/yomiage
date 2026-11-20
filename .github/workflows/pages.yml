@@ -28,9 +28,43 @@ jobs:
       - name: Stub server plugin
         run: |
           test -f voicevox-proxy.ts || echo "export const voicevoxProxy = () => ({ name: 'no-server' });" > voicevox-proxy.ts
+      # 本家のソースが変わっていなければ、表示のバージョンを前回と同じにして本体ファイルを変えない
+      - name: Main build stamp
+        id: stamp
+        run: |
+          STAMP=$(git log -1 --format='%ci' -- index.html src/ package-lock.json package.json tsconfig.json scripts/ public/apple-touch-icon.png public/icon.svg public/pwa-192.png public/pwa-512.png public/janitor | sed 's/ /_/' | cut -c1-16)
+          echo "build=$STAMP"
+          echo "build=$STAMP" >> "$GITHUB_OUTPUT"
       - run: npm run build
         env:
           YOMIAGE_BASE: /yomiage/
+          YOMIAGE_BUILD: ${{ steps.stamp.outputs.build }}
+      - name: Build nana copy
+        run: npm run build
+        env:
+          YOMIAGE_BASE: /yomiage/nana/
+          YOMIAGE_APP_NAME: よみあげ（ナナ+用）
+          YOMIAGE_HIDE_MATOME: '1'
+          YOMIAGE_OUTDIR: dist-nana
+      - name: Merge nana copy into site
+        run: |
+          set -euo pipefail
+          rm -rf dist/nana
+          mkdir -p dist/nana
+          cp -a dist-nana/. dist/nana/
+          if grep -R -F 'm.162-43-75-107' dist-nana; then
+            echo 'nana bundle must not contain the private matome host' >&2
+            exit 1
+          fi
+          if grep -R -F 'まとめアプリ' dist-nana; then
+            echo 'nana bundle must not contain まとめアプリ' >&2
+            exit 1
+          fi
+          if grep -R -F 'lnkMatome' dist-nana; then
+            echo 'nana bundle must not contain lnkMatome' >&2
+            exit 1
+          fi
+          echo 'nana copy checks passed'
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
