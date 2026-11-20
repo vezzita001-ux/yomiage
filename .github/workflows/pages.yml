@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 本家ソースの最終変更コミット日を stamp に使うため
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -32,7 +34,12 @@ jobs:
       - name: Main build stamp
         id: stamp
         run: |
+          git log -1 --format='%H %ci' -- index.html src/ package-lock.json package.json tsconfig.json scripts/ public/apple-touch-icon.png public/icon.svg public/pwa-192.png public/pwa-512.png public/janitor
           STAMP=$(git log -1 --format='%ci' -- index.html src/ package-lock.json package.json tsconfig.json scripts/ public/apple-touch-icon.png public/icon.svg public/pwa-192.png public/pwa-512.png public/janitor | sed 's/ /_/' | cut -c1-16)
+          if [ -z "$STAMP" ]; then
+            echo 'could not determine main build stamp' >&2
+            exit 1
+          fi
           echo "build=$STAMP"
           echo "build=$STAMP" >> "$GITHUB_OUTPUT"
       - run: npm run build
